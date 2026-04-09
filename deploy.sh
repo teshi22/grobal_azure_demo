@@ -1,0 +1,88 @@
+#!/bin/bash
+set -euo pipefail
+
+# =============================================================================
+# 出張申請エージェント - デプロイスクリプト
+# =============================================================================
+
+SUBSCRIPTION_ID="5290deef-ab3d-4e26-90bb-2296ecd99c71"
+RESOURCE_GROUP="rg-travel-agent-demo"
+LOCATION="swedencentral"
+
+echo "=== 出張申請エージェント デプロイ ==="
+
+# サブスクリプション設定
+echo "1. サブスクリプション設定..."
+az account set --subscription "$SUBSCRIPTION_ID"
+
+# リソースグループ作成
+echo "2. リソースグループ作成: $RESOURCE_GROUP ($LOCATION)..."
+az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+
+# Bicep デプロイ
+echo "3. Foundry インフラデプロイ中..."
+DEPLOY_OUTPUT=$(az deployment group create \
+  --resource-group "$RESOURCE_GROUP" \
+  --template-file infra/main.bicep \
+  --parameters location="$LOCATION" \
+  --query "properties.outputs" \
+  --output json)
+
+# 出力値の取得
+ACCOUNT_NAME=$(echo "$DEPLOY_OUTPUT" | jq -r '.accountName.value')
+PROJECT_NAME=$(echo "$DEPLOY_OUTPUT" | jq -r '.projectName.value')
+ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.endpoint.value')
+PROJECT_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.projectEndpoint.value')
+BING_CONNECTION=$(echo "$DEPLOY_OUTPUT" | jq -r '.bingConnectionName.value')
+APPINSIGHTS_CONN=$(echo "$DEPLOY_OUTPUT" | jq -r '.appInsightsConnectionString.value')
+
+echo ""
+echo "=== デプロイ完了 ==="
+echo "Account Name:     $ACCOUNT_NAME"
+echo "Project Name:     $PROJECT_NAME"
+echo "Endpoint:         $ENDPOINT"
+echo "Project Endpoint: $PROJECT_ENDPOINT"
+echo "Bing Connection:  $BING_CONNECTION"
+echo "App Insights:     ${APPINSIGHTS_CONN:0:60}..."
+echo ""
+
+# 現在のユーザーにロール割り当て
+echo "4. ロール割り当て中..."
+USER_OBJECT_ID=$(az ad signed-in-user show --query id --output tsv)
+ACCOUNT_RESOURCE_ID=$(az cognitiveservices account show \
+  --name "$ACCOUNT_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query id --output tsv)
+
+az role assignment create \
+  --assignee "$USER_OBJECT_ID" \
+  --role "Azure AI Developer" \
+  --scope "$ACCOUNT_RESOURCE_ID" \
+  --output none 2>/dev/null || echo "  (ロール割り当て済み、スキップ)"
+
+# Bing connection ID の取得 (プロジェクトスコープ)
+echo "5. Bing 接続 ID 取得中..."
+ACCOUNT_RESOURCE_ID=$(az cognitiveservices account show \
+  --name "$ACCOUNT_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query id --output tsv)
+BING_CONNECTION_ID="${ACCOUNT_RESOURCE_ID}/projects/${PROJECT_NAME}/connections/${BING_CONNECTION}"
+
+# .env ファイル作成
+echo "6. .env ファイル作成中..."
+cat > .env << EOF
+AZURE_AI_PROJECT_ENDPOINT=${PROJECT_ENDPOINT}
+AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5.4
+BING_CONNECTION_NAME=${BING_CONNECTION}
+BING_PROJECT_CONNECTION_ID=${BING_CONNECTION_ID}
+APPLICATIONINSIGHTS_CONNECTION_STRING=${APPINSIGHTS_CONN}
+EOF
+
+echo ""
+echo "=== セットアップ完了 ==="
+echo ".env ファイルが作成されました。"
+echo ""
+echo "次のステップ:"
+echo "  pip install -r requirements.txt"
+echo "  python src/build_agents.py"
+echo "  python src/workflow.py"
