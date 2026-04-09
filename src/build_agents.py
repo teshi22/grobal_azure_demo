@@ -20,12 +20,16 @@ from azure.ai.projects.models import (
     BingGroundingSearchConfiguration,
     BingGroundingSearchToolParameters,
     BingGroundingTool,
-    FoundryFeaturesOptInKeys,
     FunctionTool,
     HostedAgentDefinition,
     PromptAgentDefinition,
     ProtocolVersionRecord,
 )
+
+try:
+    from azure.ai.projects.models import FoundryFeaturesOptInKeys
+except ImportError:
+    FoundryFeaturesOptInKeys = None
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv, set_key
 
@@ -114,6 +118,10 @@ AGENTS = [
 
 ```json
 {
+  "departure": "出発地（例: 大阪）",
+  "destination": "目的地（例: 東京品川）",
+  "purpose": "出張目的（例: 顧客訪問）",
+  "schedule": "日程（例: 7/10〜7/11）",
   "trip_type": "日帰り or 宿泊",
   "transportation_legs": [
     {"method": "交通手段（例: 新幹線のぞみ 普通車指定席）", "from": "出発駅", "to": "到着駅", "cost": 片道金額（円、整数）},
@@ -123,7 +131,6 @@ AGENTS = [
   "hotel": "ホテル名 or null（日帰りの場合）",
   "hotel_cost_per_night": 1泊料金 or null（円、整数）,
   "hotel_nights": 泊数 or null（整数）,
-  "schedule": "スケジュール概要",
   "total_cost": 合計金額（円、整数）,
   "distance_km": 片道距離（km、数値）,
   "travel_time_hours": 片道所要時間（時間、数値）

@@ -260,7 +260,27 @@ def _format_plan_review(args_str: str, args: dict) -> str:
     try:
         plan = json.loads(plan_text)
         trip_type = plan.get("trip_type", "宿泊")
-        parts: list[str] = [f"📋 旅程プラン確認\n\n種別: {trip_type}\n"]
+
+        # --- 入力内容の確認 ---
+        header = "✅ 入力内容を確認しました\n\n"
+        schedule = plan.get("schedule", "")
+        departure = plan.get("departure", "")
+        destination = plan.get("destination", "")
+        purpose = plan.get("purpose", "")
+        items: list[str] = []
+        if schedule:
+            items.append(f"📅 日程: {schedule}")
+        if departure:
+            items.append(f"📍 出発地: {departure}")
+        if destination:
+            items.append(f"📍 目的地: {destination}")
+        if purpose:
+            items.append(f"🎯 目的: {purpose}")
+        items.append(f"🏷️ 種別: {trip_type}")
+        header += "  \n".join(items)
+
+        # --- 旅程プラン ---
+        parts: list[str] = [header + "\n\n---\n\n📋 旅程プラン\n"]
 
         for i, leg in enumerate(plan.get("transportation_legs", []), 1):
             parts.append(
@@ -425,7 +445,8 @@ for msg in st.session_state.messages:
 # HITL 承認待ちの場合、種別に応じたボタンを表示
 if st.session_state.hitl_call_id:
     if st.session_state.hitl_type == "plan_review":
-        if st.button("✅ OK — このプランで進める", use_container_width=True, type="primary"):
+        btn_key = f"ok_btn_{st.session_state.hitl_call_id}"
+        if st.button("✅ OK — このプランで進める", use_container_width=True, type="primary", key=btn_key):
             process_user_input("OK")
             st.rerun()
     # clarification の場合はチャット入力のみ（ボタン不要）
