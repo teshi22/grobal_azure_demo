@@ -5,13 +5,15 @@
 # デプロイするためのエントリーポイント。
 #
 # HITL ポイント:
+#   - 情報確認: RequestClarifier が情報不足と判定 → ユーザーに追加質問
 #   - プラン確認: TravelPlanner の結果をユーザーに提示 → 確定 or 変更要望
 #     ctx.request_info() でワークフロー停止、FileCheckpointRepository で状態永続化
 #     ユーザーが次メッセージを送ると @response_handler で再開
 #
 # 会話フロー:
-#   1. ユーザー: 出張リクエスト → TravelPlanner → プラン HITL
-#   2. ユーザー: OK or 変更要望 → (変更なら TravelPlanner へ戻る)
+#   1. ユーザー: 出張リクエスト → RequestClarifier → (不足あれば HITL で質問)
+#   2. 情報が揃ったら → TravelPlanner → プラン HITL
+#   3. ユーザー: OK or 変更要望 → (変更なら TravelPlanner へ戻る)
 #      OK なら PolicyChecker → ApprovalAgent → 申請書出力
 #
 # ローカルテスト:
@@ -51,6 +53,7 @@ load_dotenv()
 # 設定
 # ---------------------------------------------------------------------------
 PROJECT_ENDPOINT = os.environ["AZURE_AI_PROJECT_ENDPOINT"]
+REQUEST_CLARIFIER_AGENT = os.environ.get("REQUEST_CLARIFIER_AGENT", "RequestClarifier")
 TRAVEL_PLANNER_AGENT = os.environ.get("TRAVEL_PLANNER_AGENT", "TravelPlanner")
 POLICY_CHECKER_AGENT = os.environ.get("POLICY_CHECKER_AGENT", "PolicyChecker")
 APPROVAL_AGENT_NAME = os.environ.get("APPROVAL_AGENT", "ApprovalAgent")
@@ -114,9 +117,47 @@ class PolicyCheckResult(BaseModel):
     policy_text: str = Field(description="PolicyChecker の応答テキスト")
 
 
+class ClarificationResult(BaseModel):
+    """RequestClarifier の判定結果"""
+    complete: bool = Field(description="必要情報が揃っているか")
+    enriched_request: str = Field(default="", description="整理済みリクエスト")
+    missing_fields: list[str] = Field(default_factory=list, description="不足フィールド")
+    question: str = Field(default="", description="ユーザーへの質問")
+
+
 # ---------------------------------------------------------------------------
 # HITL データクラス
 # ---------------------------------------------------------------------------
+@dataclass
+class ClarificationHITLRequest:
+    """情報不足時のユーザー質問 HITL リクエスト"""
+    question: str
+    missing_fields: list[str]
+    original_input: str
+
+    def convert_to_payload(self) -> str:
+        lines = ["❓ 情報が不足しています", ""]
+        if self.missing_fields:
+            lines.append("不足項目: " + "、".join(self.missing_fields))
+            lines.append("")
+        lines.append(self.question)
+        return "\n".join(lines)
+
+
+@dataclass
+class ClarificationHITLResponse:
+    """ユーザーの追加情報回答"""
+    answer: str
+
+    @staticmethod
+    def convert_from_payload(payload: str) -> "ClarificationHITLResponse":
+        text = payload.strip()
+        try:
+            data = json.loads(payload)
+            return ClarificationHITLResponse(answer=data.get("answer", text))
+        except Exception:
+            pass
+        return ClarificationHITLResponse(answer=text)
 @dataclass
 class PlanReviewRequest:
     """プラン確認の HITL リクエスト"""
@@ -265,6 +306,118 @@ class MessageToStrStep(Executor):
         await ctx.send_message(text)
 
 
+class RequestClarifierStep(Executor):
+    """RequestClarifier Foundry Agent で入力の過不足を判定する。
+
+    complete=True → enriched_request を TravelPlanner へ
+    complete=False → HITL でユーザーに質問 → 回答を元に再判定
+    """
+
+    def __init__(self):
+        super().__init__(id="request_clarifier")
+
+    def _call_clarifier(self, user_input: str) -> dict:
+        import re
+        conv = _openai_client.conversations.create(
+            items=[{"type": "message", "role": "user", "content": user_input}],
+        )
+        response = _openai_client.responses.create(
+            conversation=conv.id,
+            extra_body={"agent_reference": {"name": REQUEST_CLARIFIER_AGENT, "type": "agent_reference"}},
+        )
+        text = response.output_text
+        try:
+            _openai_client.conversations.delete(conversation_id=conv.id)
+        except Exception:
+            pass
+        m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+        raw = m.group(1) if m else text
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"complete": True, "enriched_request": user_input}
+
+    @handler(input=str, output=ClarificationResult)
+    async def run(self, user_input, ctx) -> None:
+        result = await asyncio.to_thread(self._call_clarifier, user_input)
+        ctx.set_state("original_input", user_input)
+        cr = ClarificationResult(
+            complete=result.get("complete", True),
+            enriched_request=result.get("enriched_request", user_input),
+            missing_fields=result.get("missing_fields", []),
+            question=result.get("question", ""),
+        )
+        await ctx.send_message(cr)
+
+
+def is_clarification_complete(message: Any) -> bool:
+    if isinstance(message, ClarificationResult):
+        return message.complete
+    return True
+
+
+def is_clarification_incomplete(message: Any) -> bool:
+    if isinstance(message, ClarificationResult):
+        return not message.complete
+    return False
+
+
+class ClarificationToRequestStep(Executor):
+    """ClarificationResult (complete=true) → enriched_request テキストに変換"""
+
+    def __init__(self):
+        super().__init__(id="clarification_to_request")
+
+    @handler(input=ClarificationResult, output=str)
+    async def run(self, result, ctx) -> None:
+        await ctx.send_message(result.enriched_request)
+
+
+class UserClarificationStep(Executor):
+    """ClarificationResult (complete=false) → HITL でユーザーに追加情報を質問"""
+
+    def __init__(self):
+        super().__init__(id="user_clarification")
+
+    @handler(input=ClarificationResult, output=str)
+    async def handle_incomplete(self, result, ctx) -> None:
+        ctx.set_state("clarification_round", ctx.get_state("clarification_round", 0) + 1)
+        await ctx.request_info(
+            request_data=ClarificationHITLRequest(
+                question=result.question or "追加情報を教えてください。",
+                missing_fields=result.missing_fields,
+                original_input=ctx.get_state("original_input", ""),
+            ),
+            response_type=ClarificationHITLResponse,
+        )
+
+    @response_handler
+    async def handle_answer(
+        self,
+        original: ClarificationHITLRequest,
+        response: ClarificationHITLResponse,
+        ctx: WorkflowContext,
+    ) -> None:
+        round_num = ctx.get_state("clarification_round", 1)
+        updated = f"{original.original_input}\n{response.answer}"
+        ctx.set_state("original_input", updated)
+        if round_num >= 3:
+            await ctx.send_message(updated, target_id="clarification_to_request_direct")
+        else:
+            await ctx.send_message(updated, target_id="request_clarifier")
+
+
+class ClarificationDirectStep(Executor):
+    """確認ラウンド上限 → そのまま TravelPlanner へ"""
+
+    def __init__(self):
+        super().__init__(id="clarification_to_request_direct")
+
+    @handler(input=str, output=str)
+    async def run(self, text, ctx) -> None:
+        await ctx.send_message(text)
+
+
 class PlanReviewStep(Executor):
     """HITL: プラン確認 — ワークフローを停止してユーザーに確認を求める"""
 
@@ -385,11 +538,19 @@ def create_builder():
     """HITL 対応ワークフロービルダーを返す。
 
     グラフ:
-      MessageToStr → TravelPlanner → PlanReview (HITL)
-                          ↑               |
-                          └── (変更要望) ──┘
-                                           |  (OK)
-                                           ↓
+      MessageToStr → RequestClarifier ──[complete]──→ ClarificationToRequest → TravelPlanner
+                          ↑             [incomplete]
+                          |                  ↓
+                          └──── UserClarification (HITL: 追加情報)
+                                     |  (ラウンド上限)
+                                     ↓
+                              ClarificationDirect ──→ TravelPlanner
+
+      TravelPlanner → PlanReview (HITL)
+                           ↑               |
+                           └── (変更要望) ──┘
+                                            |  (OK)
+                                            ↓
                      ToPolicyInput → PolicyChecker → PolicyRouter
                                                         |
                                                ┌───────┴───────┐
@@ -400,6 +561,10 @@ def create_builder():
                                           ApprovalAgent → OutputResult
     """
     message_to_str = MessageToStrStep()
+    request_clarifier = RequestClarifierStep()
+    clarification_to_request = ClarificationToRequestStep()
+    user_clarification = UserClarificationStep()
+    clarification_direct = ClarificationDirectStep()
     travel_planner = FoundryAgentNode(id="travel_planner", agent_name=TRAVEL_PLANNER_AGENT)
     plan_review = PlanReviewStep()
     to_policy_input = ToPolicyInputStep()
@@ -416,7 +581,15 @@ def create_builder():
 
     builder = (
         WorkflowBuilder(start_executor=message_to_str)
-        .add_edge(message_to_str, travel_planner)
+        # RequestClarifier: 入力の過不足を判定
+        .add_edge(message_to_str, request_clarifier)
+        .add_edge(request_clarifier, clarification_to_request, condition=is_clarification_complete)
+        .add_edge(request_clarifier, user_clarification, condition=is_clarification_incomplete)
+        .add_edge(user_clarification, request_clarifier)        # 追加情報 → 再判定
+        .add_edge(user_clarification, clarification_direct)     # ラウンド上限 → そのまま進む
+        .add_edge(clarification_direct, travel_planner)
+        .add_edge(clarification_to_request, travel_planner)
+        # TravelPlanner → PlanReview (HITL)
         .add_edge(travel_planner, plan_review)
         .add_edge(plan_review, travel_planner)        # 変更要望 → 再検索ループ
         .add_edge(plan_review, to_policy_input)        # OK → 規程チェックへ

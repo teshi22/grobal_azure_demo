@@ -1,0 +1,6 @@
+
+.playwright-mcp/
+__pycache__/
+checkpoints_test/
+checkpoints_bench/
+*.pyc
