@@ -90,6 +90,19 @@ module appInsights 'modules/app-insights.bicep' = {
 }
 
 // =============================================================================
+// 5. Azure Container Registry (ホステッドエージェント用)
+// =============================================================================
+var acrName = toLower('${aiServicesName}acr${uniqueSuffix}')
+
+module acr 'modules/acr.bicep' = {
+  name: 'acr-${uniqueSuffix}'
+  params: {
+    acrName: acrName
+    location: location
+  }
+}
+
+// =============================================================================
 // Outputs
 // =============================================================================
 output accountName string = aiAccount.outputs.accountName
@@ -98,3 +111,5 @@ output endpoint string = aiAccount.outputs.endpoint
 output projectEndpoint string = '${aiAccount.outputs.endpoint}api/projects/${projectName}'
 output bingConnectionName string = bingSearch.outputs.connectionName
 output appInsightsConnectionString string = appInsights.outputs.connectionString
+output acrName string = acr.outputs.acrName
+output acrLoginServer string = acr.outputs.acrLoginServer

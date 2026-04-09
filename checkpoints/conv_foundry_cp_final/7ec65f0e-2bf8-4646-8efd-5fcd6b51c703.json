@@ -1,0 +1,34 @@
+{
+  "workflow_name": "WorkflowBuilder-bf9f725e-1613-430b-98ff-79ae19ecf37e",
+  "graph_signature_hash": "461a6da0c89e38f14ceabb756896adda3c674773099110f87932aa907c2153b7",
+  "checkpoint_id": "7ec65f0e-2bf8-4646-8efd-5fcd6b51c703",
+  "previous_checkpoint_id": "135bb335-c0cb-4c85-8e7a-6f06cd300bb2",
+  "timestamp": "2026-04-09T04:35:53.129701+00:00",
+  "messages": {},
+  "state": {
+    "_workflow_run_kwargs": {},
+    "_executor_state": {
+      "message_to_str": {},
+      "travel_planner": {},
+      "plan_review": {},
+      "to_policy_input": {},
+      "policy_checker": {},
+      "policy_router": {},
+      "to_approval_input": {},
+      "handle_rejection": {},
+      "approval_agent": {},
+      "output_result": {}
+    },
+    "travel_planner_response": "{\n  \"trip_type\": \"日帰り\",\n  \"transportation_legs\": [\n    {\n      \"method\": \"航空機（羽田空港→新千歳空港）+ JR快速エアポート\",\n      \"from\": \"羽田空港\",\n      \"to\": \"北海道大学（札幌駅）\",\n      \"cost\": 18000\n    },\n    {\n      \"method\": \"JR快速エアポート + 航空機（新千歳空港→羽田空港）\",\n      \"from\": \"北海道大学（札幌駅）\",\n      \"to\": \"羽田空港\",\n      \"cost\": 18000\n    }\n  ],\n  \"transportation_cost\": 36000,\n  \"hotel\": null,\n  \"hotel_cost_per_night\": null,\n  \"hotel_nights\": null,\n  \"schedule\": \"6/12 朝に羽田空港を出発、午前中に新千歳空港到着。JR快速エアポートで札幌駅へ移動後、北海道大学で研究打ち合わせ。夕方に札幌駅から新千歳空港へ移動し、夜に羽田空港へ帰着。\",\n  \"total_cost\": 36000,\n  \"distance_km\": 830,\n  \"travel_time_hours\": 3.0\n}",
+    "current_plan": "{\n  \"trip_type\": \"日帰り\",\n  \"transportation_legs\": [\n    {\n      \"method\": \"航空機（羽田空港→新千歳空港）+ JR快速エアポート\",\n      \"from\": \"羽田空港\",\n      \"to\": \"北海道大学（札幌駅）\",\n      \"cost\": 18000\n    },\n    {\n      \"method\": \"JR快速エアポート + 航空機（新千歳空港→羽田空港）\",\n      \"from\": \"北海道大学（札幌駅）\",\n      \"to\": \"羽田空港\",\n      \"cost\": 18000\n    }\n  ],\n  \"transportation_cost\": 36000,\n  \"hotel\": null,\n  \"hotel_cost_per_night\": null,\n  \"hotel_nights\": null,\n  \"schedule\": \"6/12 朝に羽田空港を出発、午前中に新千歳空港到着。JR快速エアポートで札幌駅へ移動後、北海道大学で研究打ち合わせ。夕方に札幌駅から新千歳空港へ移動し、夜に羽田空港へ帰着。\",\n  \"total_cost\": 36000,\n  \"distance_km\": 830,\n  \"travel_time_hours\": 3.0\n}"
+  },
+  "pending_request_info_events": {
+    "5b8d7592-fffe-47de-916e-1d2fc0770161": {
+      "__pickled__": "gAWVFQUAAAAAAACMImFnZW50X2ZyYW1ld29yay5fd29ya2Zsb3dzLl9ldmVudHOUjA1Xb3JrZmxvd0V2ZW50lJOUKYGUfZQojAR0eXBllIwMcmVxdWVzdF9pbmZvlIwEZGF0YZSMCF9fbWFpbl9flIwRUGxhblJldmlld1JlcXVlc3SUk5QpgZR9lIwJcGxhbl90ZXh0lFiHAwAAewogICJ0cmlwX3R5cGUiOiAi5pel5biw44KKIiwKICAidHJhbnNwb3J0YXRpb25fbGVncyI6IFsKICAgIHsKICAgICAgIm1ldGhvZCI6ICLoiKrnqbrmqZ/vvIjnvr3nlLDnqbrmuK/ihpLmlrDljYPmrbPnqbrmuK/vvIkrIEpS5b+r6YCf44Ko44Ki44Od44O844OIIiwKICAgICAgImZyb20iOiAi576955Sw56m65rivIiwKICAgICAgInRvIjogIuWMl+a1t+mBk+Wkp+Wtpu+8iOacreW5jOmnhe+8iSIsCiAgICAgICJjb3N0IjogMTgwMDAKICAgIH0sCiAgICB7CiAgICAgICJtZXRob2QiOiAiSlLlv6vpgJ/jgqjjgqLjg53jg7zjg4ggKyDoiKrnqbrmqZ/vvIjmlrDljYPmrbPnqbrmuK/ihpLnvr3nlLDnqbrmuK/vvIkiLAogICAgICAiZnJvbSI6ICLljJfmtbfpgZPlpKflrabvvIjmnK3luYzpp4XvvIkiLAogICAgICAidG8iOiAi576955Sw56m65rivIiwKICAgICAgImNvc3QiOiAxODAwMAogICAgfQogIF0sCiAgInRyYW5zcG9ydGF0aW9uX2Nvc3QiOiAzNjAwMCwKICAiaG90ZWwiOiBudWxsLAogICJob3RlbF9jb3N0X3Blcl9uaWdodCI6IG51bGwsCiAgImhvdGVsX25pZ2h0cyI6IG51bGwsCiAgInNjaGVkdWxlIjogIjYvMTIg5pyd44Gr576955Sw56m65riv44KS5Ye655m644CB5Y2I5YmN5Lit44Gr5paw5Y2D5q2z56m65riv5Yiw552A44CCSlLlv6vpgJ/jgqjjgqLjg53jg7zjg4jjgafmnK3luYzpp4Xjgbjnp7vli5XlvozjgIHljJfmtbfpgZPlpKflrabjgafnoJTnqbbmiZPjgaHlkIjjgo/jgZvjgILlpJXmlrnjgavmnK3luYzpp4XjgYvjgonmlrDljYPmrbPnqbrmuK/jgbjnp7vli5XjgZfjgIHlpJzjgavnvr3nlLDnqbrmuK/jgbjluLDnnYDjgIIiLAogICJ0b3RhbF9jb3N0IjogMzYwMDAsCiAgImRpc3RhbmNlX2ttIjogODMwLAogICJ0cmF2ZWxfdGltZV9ob3VycyI6IDMuMAp9lHNijAZvcmlnaW6UaACME1dvcmtmbG93RXZlbnRTb3VyY2WUk5SMCEVYRUNVVE9SlIWUUpSMBXN0YXRllE6MB2RldGFpbHOUTowLZXhlY3V0b3JfaWSUTowLX3JlcXVlc3RfaWSUjCQ1YjhkNzU5Mi1mZmZlLTQ3ZGUtOTE2ZS0xZDJmYzA3NzAxNjGUjBNfc291cmNlX2V4ZWN1dG9yX2lklIwLcGxhbl9yZXZpZXeUjA1fcmVxdWVzdF90eXBllGgKjA5fcmVzcG9uc2VfdHlwZZRoCIwSUGxhblJldmlld1Jlc3BvbnNllJOUjAlpdGVyYXRpb26UTnViLg==",
+      "__type__": "agent_framework._workflows._events:WorkflowEvent"
+    }
+  },
+  "iteration_count": 2,
+  "metadata": {},
+  "version": "1.0"
+}

@@ -21,7 +21,8 @@
 
 | ファイル | 説明 | 使用ライブラリ |
 |---------|------|---------------|
-| `src/workflow.py` | **Agent Framework 版（推奨）** | `agent-framework>=1.0.0rc6` |
+| `src/workflow.py` | **対話型 CLI 版** | `agent-framework>=1.0.0` |
+| `src/hosted.py` | **ホステッドエージェント版** | `azure-ai-agentserver-agentframework` |
 | `src/build_agents.py` | Foundry Agent ビルドスクリプト | `azure-ai-projects==2.0.1` |
 
 ### Agent Framework 版の特徴
@@ -156,12 +157,91 @@ cat .env
 ### 実行
 
 ```bash
-# Agent Framework 版（推奨）
+# ローカル実行（対話型 CLI）
 python src/workflow.py
-
-# azure-ai-projects SDK 版
-python src/main.py
 ```
+
+### ホステッドエージェントとしてデプロイ
+
+ワークフローを Foundry Agent Service のホステッドエージェントとしてデプロイできます。
+ホステッド版（`src/hosted.py`）は非対話型で、HTTP API 経由でリクエストを受け付けます。
+
+#### ローカルテスト
+
+```bash
+# ホステッドエージェントをローカルで起動（localhost:8088）
+python src/hosted.py
+```
+
+```bash
+# 別ターミナルからリクエスト
+curl -sS -X POST http://localhost:8088/responses \
+  -H "Content-Type: application/json" \
+  -d '{"input": "6/12 北海道大学", "stream": false}'
+```
+
+#### デプロイ手順
+
+```bash
+# 1. Docker イメージをビルド（linux/amd64 必須）
+az acr build --registry <YOUR_ACR> --platform linux/amd64 --image travel-request-agent:latest .
+
+# 2. サブエージェントをビルド
+python src/build_agents.py
+
+# 3. ホステッドエージェントを登録
+python src/build_agents.py --deploy
+```
+
+#### ホステッドエージェントの呼び出し
+
+```python
+from azure.identity import DefaultAzureCredential
+from azure.ai.projects import AIProjectClient
+
+client = AIProjectClient(
+    endpoint="<PROJECT_ENDPOINT>",
+    credential=DefaultAzureCredential(),
+)
+openai = client.get_openai_client()
+
+# 会話を作成
+conversation = openai.conversations.create()
+
+# Step 1: 出張リクエスト
+response = openai.responses.create(
+    conversation=conversation.id,
+    extra_body={"agent_reference": {"name": "travel-request-agent", "type": "agent_reference"}},
+    input="6/12に東京出張、顧客訪問",
+)
+# → HITL: プラン確認が返される（function_call name="__hosted_agent_adapter_hitl__"）
+
+# Step 2: HITL 承認（ストリーミング推奨 — 100秒タイムアウト回避）
+import json
+hitl_call_id = next(
+    item.call_id for item in response.output
+    if hasattr(item, 'name') and item.name == '__hosted_agent_adapter_hitl__'
+)
+response2 = openai.responses.create(
+    conversation=conversation.id,
+    extra_body={"agent_reference": {"name": "travel-request-agent", "type": "agent_reference"}},
+    input=[{"call_id": hitl_call_id, "output": json.dumps({"approved": True}), "type": "function_call_output"}],
+    stream=True,
+)
+for event in response2:
+    pass  # ストリーミングイベントを消費
+# → 規程チェック → 申請書作成 → 送信完了
+```
+
+> **注意**: HITL 承認（Step 2）は `stream=True` を使用してください。
+> 後続ワークフロー（PolicyChecker → ApprovalAgent）の実行に時間がかかるため、
+> 非ストリーミングではプラットフォームの 100 秒タイムアウトに達する可能性があります。
+
+| ファイル | 説明 |
+|---------|------|
+| `src/hosted.py` | ホステッドエージェント版エントリーポイント |
+| `Dockerfile` | コンテナイメージ定義 |
+| `agent.yaml` | Azure Developer CLI 用マニフェスト |
 
 ---
 

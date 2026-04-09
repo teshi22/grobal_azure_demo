@@ -1,0 +1,12 @@
+.venv
+.git
+.env
+.env.sample
+__pycache__
+*.pyc
+checkpoints/
+infra/
+*.md
+deploy.sh
+instruction.md
+.dockerignore

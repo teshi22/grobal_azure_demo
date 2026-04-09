@@ -1,17 +1,18 @@
 # =============================================================================
 # Foundry Agent ビルドスクリプト
 # =============================================================================
-# 3 つの Foundry Agent を作成し、エージェント名を .env に保存する。
-# ワークフロー実行前に一度だけ実行すればよい。
+# Foundry Agent の作成・削除・一覧表示 + ホステッドエージェントデプロイ
 #
 # 使い方:
-#   python src/build_agents.py          # 作成
-#   python src/build_agents.py --delete  # 削除
-#   python src/build_agents.py --list    # 一覧
+#   python src/build_agents.py            # サブエージェント作成
+#   python src/build_agents.py --delete   # サブエージェント削除
+#   python src/build_agents.py --list     # エージェント一覧
+#   python src/build_agents.py --deploy   # ホステッドエージェントをデプロイ
 # =============================================================================
 
 import argparse
 import os
+import subprocess
 import sys
 
 from azure.ai.projects import AIProjectClient
@@ -19,8 +20,11 @@ from azure.ai.projects.models import (
     BingGroundingSearchConfiguration,
     BingGroundingSearchToolParameters,
     BingGroundingTool,
+    FoundryFeaturesOptInKeys,
     FunctionTool,
+    HostedAgentDefinition,
     PromptAgentDefinition,
+    ProtocolVersionRecord,
 )
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv, set_key
@@ -351,18 +355,144 @@ def list_agents():
 
 
 # ---------------------------------------------------------------------------
-# メイン
+# ホステッドエージェント設定
 # ---------------------------------------------------------------------------
+HOSTED_AGENT_NAME = "travel-request-agent"
+HOSTED_IMAGE_NAME = "travel-request-agent"
+HOSTED_IMAGE_TAG = "latest"
+
+
+# ---------------------------------------------------------------------------
+# コマンド: デプロイ (ホステッドエージェント)
+# ---------------------------------------------------------------------------
+
+
+def deploy_hosted_agent():
+    """Docker ビルド → ACR プッシュ → ホステッドエージェント登録"""
+    acr_name = os.environ.get("ACR_NAME", "")
+    if not acr_name:
+        print("❌ ACR_NAME 環境変数を設定してください")
+        print("   例: export ACR_NAME=myregistry")
+        sys.exit(1)
+
+    acr_login_server = (
+        acr_name if "." in acr_name else f"{acr_name}.azurecr.io"
+    )
+    full_image = f"{acr_login_server}/{HOSTED_IMAGE_NAME}:{HOSTED_IMAGE_TAG}"
+    project_root = os.path.dirname(os.path.dirname(__file__))
+
+    print("=" * 60)
+    print("🚀 ホステッドエージェント デプロイ")
+    print("=" * 60)
+    print(f"  Endpoint: {PROJECT_ENDPOINT}")
+    print(f"  ACR:      {acr_login_server}")
+    print(f"  Image:    {full_image}")
+    print()
+
+    # --- Step 1: サブエージェントの存在確認 ---
+    print("📋 Step 1: サブエージェント確認...")
+    credential = DefaultAzureCredential()
+    project_client = AIProjectClient(endpoint=PROJECT_ENDPOINT, credential=credential)
+
+    missing = []
+    for agent_def in AGENTS:
+        name = os.environ.get(agent_def["env_key"], agent_def["name"])
+        try:
+            versions = list(project_client.agents.list_versions(agent_name=name))
+            if not versions:
+                missing.append(name)
+            else:
+                print(f"  ✅ {name}")
+        except Exception:
+            missing.append(name)
+
+    if missing:
+        print()
+        print(f"  ⚠️  未作成のサブエージェント: {', '.join(missing)}")
+        print("  先に python src/build_agents.py を実行してください")
+        sys.exit(1)
+    print()
+
+    # --- Step 2: Docker ビルド ---
+    print("🐳 Step 2: Docker イメージビルド...")
+    subprocess.run(
+        ["docker", "build", "-t", full_image, "."],
+        cwd=project_root,
+        check=True,
+    )
+    print()
+
+    # --- Step 3: ACR プッシュ ---
+    print("📤 Step 3: ACR にプッシュ...")
+    acr_short = acr_name.split(".")[0]
+    subprocess.run(["az", "acr", "login", "--name", acr_short], check=True)
+    subprocess.run(["docker", "push", full_image], check=True)
+    print()
+
+    # --- Step 4: ホステッドエージェント登録 ---
+    print("☁️  Step 4: ホステッドエージェント登録...")
+
+    env_vars = {
+        "AZURE_AI_PROJECT_ENDPOINT": PROJECT_ENDPOINT,
+        "AZURE_AI_MODEL_DEPLOYMENT_NAME": MODEL,
+        "FOUNDRY_HOSTED": "1",
+    }
+    # サブエージェント名を環境変数に追加
+    for agent_def in AGENTS:
+        env_vars[agent_def["env_key"]] = os.environ.get(
+            agent_def["env_key"], agent_def["name"]
+        )
+    # Bing 接続 ID（設定されている場合）
+    if BING_CONNECTION_ID:
+        env_vars["BING_PROJECT_CONNECTION_ID"] = BING_CONNECTION_ID
+
+    definition = HostedAgentDefinition(
+        container_protocol_versions=[
+            ProtocolVersionRecord(protocol="responses", version="2025-03-01"),
+        ],
+        cpu="1",
+        memory="2Gi",
+        image=full_image,
+        environment_variables=env_vars,
+    )
+
+    agent = project_client.agents.create_version(
+        agent_name=HOSTED_AGENT_NAME,
+        definition=definition,
+        foundry_features=FoundryFeaturesOptInKeys.HOSTED_AGENTS_V1_PREVIEW,
+        description="出張申請ワークフロー型マルチエージェント (HITL対応)",
+    )
+
+    # .env に保存
+    set_key(ENV_FILE, "HOSTED_AGENT_NAME", agent.name)
+
+    print(f"  ✅ name={agent.name}, version={agent.version}")
+    print(f"     → .env: HOSTED_AGENT_NAME={agent.name}")
+    print()
+    print("=" * 60)
+    print("✅ デプロイ完了！")
+    print()
+    print("Foundry ポータルでエージェントを確認してください:")
+    print(f"  https://ai.azure.com/")
+    print()
+    print("環境変数:")
+    for k, v in env_vars.items():
+        display = v[:50] + "..." if len(v) > 50 else v
+        print(f"  {k}={display}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Foundry Agent ビルドツール")
-    parser.add_argument("--delete", action="store_true", help="エージェントを削除")
-    parser.add_argument("--list", action="store_true", help="エージェント一覧を表示")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--delete", action="store_true", help="サブエージェントを削除")
+    group.add_argument("--list", action="store_true", help="エージェント一覧を表示")
+    group.add_argument("--deploy", action="store_true", help="ホステッドエージェントをデプロイ")
     args = parser.parse_args()
 
     if args.delete:
         delete_agents()
     elif args.list:
         list_agents()
+    elif args.deploy:
+        deploy_hosted_agent()
     else:
         build_agents()
