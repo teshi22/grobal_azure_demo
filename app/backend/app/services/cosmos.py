@@ -2,11 +2,13 @@
 
 - ConversationStore: 会話メタデータ CRUD
 - EventStore: SSE イベントログ (追記 + Change Feed 読み取り)
+- EventNotifier: インメモリ SSE 即時通知
 - CosmosCheckpointRepository: Agent Framework CheckpointRepository 実装
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -18,6 +20,42 @@ from azure.identity.aio import DefaultAzureCredential
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# EventNotifier — SSE 接続にイベント書き込みを即座に通知する
+# ---------------------------------------------------------------------------
+class EventNotifier:
+    """インメモリ通知: EventStore.append → SSE ループを即座に起こす"""
+
+    def __init__(self):
+        self._events: dict[str, asyncio.Event] = {}
+
+    def notify(self, conversation_id: str) -> None:
+        ev = self._events.get(conversation_id)
+        if ev:
+            ev.set()
+
+    async def wait(self, conversation_id: str, timeout: float = 15.0) -> bool:
+        if conversation_id not in self._events:
+            self._events[conversation_id] = asyncio.Event()
+        ev = self._events[conversation_id]
+        ev.clear()
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    def cleanup(self, conversation_id: str) -> None:
+        self._events.pop(conversation_id, None)
+
+
+_notifier = EventNotifier()
+
+
+def get_event_notifier() -> EventNotifier:
+    return _notifier
 
 _cosmos_client: CosmosClient | None = None
 _conversation_store: ConversationStore | None = None
@@ -98,6 +136,7 @@ class EventStore:
 
     def __init__(self):
         self._container = _get_container(settings.cosmos_event_container)
+        self._counters: dict[str, int] = {}
 
     async def append(
         self,
@@ -108,18 +147,23 @@ class EventStore:
         idempotency_key: str | None = None,
     ) -> int:
         """イベントを追記し、event_index を返す"""
-        # 現在の最大 event_index を取得
-        query = (
-            "SELECT VALUE MAX(c.event_index) FROM c "
-            "WHERE c.conversation_id = @cid"
-        )
-        params = [{"name": "@cid", "value": conversation_id}]
-        results = [
-            item
-            async for item in self._container.query_items(query, parameters=params)
-        ]
-        max_index = results[0] if results and results[0] is not None else -1
-        event_index = max_index + 1
+        # インメモリカウンターで MAX クエリを省略
+        if conversation_id in self._counters:
+            event_index = self._counters[conversation_id] + 1
+        else:
+            query = (
+                "SELECT VALUE MAX(c.event_index) FROM c "
+                "WHERE c.conversation_id = @cid"
+            )
+            params = [{"name": "@cid", "value": conversation_id}]
+            results = [
+                item
+                async for item in self._container.query_items(query, parameters=params)
+            ]
+            max_index = results[0] if results and results[0] is not None else -1
+            event_index = max_index + 1
+
+        self._counters[conversation_id] = event_index
 
         data_str = json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else data
 
@@ -134,6 +178,10 @@ class EventStore:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await self._container.create_item(doc)
+
+        # SSE ループを即座に起こす
+        _notifier.notify(conversation_id)
+
         return event_index
 
     async def get_events_after(
