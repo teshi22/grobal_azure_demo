@@ -58,7 +58,7 @@ class ConversationStore:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        await self._container.create_item(doc, partition_key=user_id)
+        await self._container.create_item(doc)
         return doc
 
     async def get(self, conversation_id: str) -> dict | None:
@@ -77,7 +77,7 @@ class ConversationStore:
         if conv:
             conv["status"] = status
             conv["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._container.upsert_item(conv, partition_key=conv["user_id"])
+            await self._container.upsert_item(conv)
 
 
 def get_conversation_store() -> ConversationStore:
@@ -133,7 +133,7 @@ class EventStore:
             "idempotency_key": idempotency_key,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        await self._container.create_item(doc, partition_key=conversation_id)
+        await self._container.create_item(doc)
         return event_index
 
     async def get_events_after(
@@ -206,7 +206,7 @@ class CosmosCheckpointRepository:
             **checkpoint_data,
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
-        await self._container.upsert_item(doc, partition_key=conversation_id)
+        await self._container.upsert_item(doc)
         return checkpoint_id
 
     async def load(self, conversation_id: str) -> dict | None:
@@ -228,8 +228,6 @@ class CosmosCheckpointRepository:
     async def delete(self, conversation_id: str, checkpoint_id: str) -> None:
         """チェックポイントを削除"""
         try:
-            await self._container.delete_item(
-                checkpoint_id, partition_key=conversation_id
-            )
+            await self._container.delete_item(checkpoint_id, partition_key=conversation_id)
         except Exception:
             logger.warning(f"Failed to delete checkpoint {checkpoint_id}")
