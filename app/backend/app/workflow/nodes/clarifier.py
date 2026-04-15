@@ -1,7 +1,9 @@
-"""RequestClarifier ノード — 構造化出力で4項目を抽出し、ロジックで過不足を判定"""
+"""RequestClarifier ノード — Foundry Agent で4項目を抽出し、ロジックで過不足を判定"""
 
 import asyncio
+import json
 import logging
+import re
 from typing import Any
 
 from agent_framework import Executor, WorkflowContext, handler, response_handler
@@ -32,40 +34,58 @@ _FIELD_LABELS = {
 
 DEFAULT_DEPARTURE = "大阪"
 
-_EXTRACTION_PROMPT = """\
-ユーザーの出張リクエストから以下の4項目を抽出してください。
-入力に明示されていない項目は空文字にしてください。推測で補完しないでください。
-
-- departure: 出発地（都市名・駅名など）
-- destination: 目的地（都市名・施設名・エリア名など）
-- schedule: 日程（日付や期間をそのまま抽出）
-- purpose: 出張目的（会議、顧客訪問、研修など）
-"""
-
 
 # ---------------------------------------------------------------------------
-# LLM 構造化出力による情報抽出
+# Foundry Agent による情報抽出
 # ---------------------------------------------------------------------------
 def _extract_fields(user_input: str) -> ExtractedRequest:
-    """LLM の構造化出力でユーザー入力から4項目を抽出する"""
+    """RequestClarifier Foundry Agent でユーザー入力から4項目を抽出する"""
     openai_client = get_openai_client()
     try:
-        response = openai_client.beta.chat.completions.parse(
-            model=settings.azure_ai_model_deployment_name,
-            messages=[
-                {"role": "system", "content": _EXTRACTION_PROMPT},
-                {"role": "user", "content": user_input},
-            ],
-            response_format=ExtractedRequest,
-            temperature=0,
+        conv = openai_client.conversations.create(
+            items=[{"type": "message", "role": "user", "content": user_input}],
         )
-        parsed = response.choices[0].message.parsed
-        if parsed is not None:
-            return parsed
-    except Exception as e:
-        logger.warning("Structured output parse failed, falling back: %s", e)
+        response = openai_client.responses.create(
+            conversation=conv.id,
+            extra_body={
+                "agent_reference": {
+                    "name": settings.request_clarifier_agent,
+                    "type": "agent_reference",
+                }
+            },
+        )
+        text = response.output_text
 
-    return ExtractedRequest()
+        try:
+            openai_client.conversations.delete(conversation_id=conv.id)
+        except Exception:
+            pass
+
+        return _parse_agent_response(text)
+
+    except Exception as e:
+        logger.warning("Foundry Agent call failed, returning empty: %s", e)
+        return ExtractedRequest()
+
+
+def _parse_agent_response(text: str) -> ExtractedRequest:
+    """Agent の応答テキストから JSON を抽出して ExtractedRequest に変換"""
+    # ```json ... ``` ブロックを優先抽出
+    m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    raw = m.group(1) if m else text
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("JSON parse failed from agent response: %s", text[:200])
+        return ExtractedRequest()
+
+    return ExtractedRequest(
+        departure=str(data.get("departure", "") or "").strip(),
+        destination=str(data.get("destination", "") or "").strip(),
+        schedule=str(data.get("schedule", "") or "").strip(),
+        purpose=str(data.get("purpose", "") or "").strip(),
+    )
 
 
 def _merge_fields(

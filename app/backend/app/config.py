@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     azure_ai_model_deployment_name: str = "gpt-5.4"
 
     # Foundry Agent 名
+    request_clarifier_agent: str = "RequestClarifier"
     travel_planner_agent: str = "TravelPlanner"
     policy_checker_agent: str = "PolicyChecker"
     approval_agent: str = "ApprovalAgent"
