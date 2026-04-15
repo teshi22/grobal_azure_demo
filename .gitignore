@@ -4,3 +4,12 @@ __pycache__/
 checkpoints_test/
 checkpoints_bench/
 *.pyc
+
+# App (Frontend + Backend)
+app/frontend/node_modules/
+app/frontend/.next/
+app/frontend/out/
+app/backend/.venv/
+
+# MCP Tools
+mcp-tools/.python_packages/

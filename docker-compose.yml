@@ -1,0 +1,27 @@
+services:
+  app:
+    build: ./app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - COSMOS_ENDPOINT=${COSMOS_ENDPOINT:-https://localhost:8081}
+      - CORS_ORIGINS=["http://localhost:3000"]
+      - ENABLE_DOCS=true
+    depends_on:
+      - cosmos-emulator
+
+  cosmos-emulator:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:latest
+    ports:
+      - "8081:8081"
+      - "10250-10255:10250-10255"
+    environment:
+      - AZURE_COSMOS_EMULATOR_PARTITION_COUNT=10
+      - AZURE_COSMOS_EMULATOR_ENABLE_DATA_PERSISTENCE=true
+    volumes:
+      - cosmos-data:/data
+
+volumes:
+  cosmos-data:
