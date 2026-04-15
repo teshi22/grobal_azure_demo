@@ -57,14 +57,6 @@ export function useChat() {
         const data = JSON.parse(e.data) as HITLRequestEvent;
         setHitlRequest(data);
         setIsLoading(false);
-        addMessage({
-          id: `hitl-${Date.now()}`,
-          role: "assistant",
-          content: data.message,
-          timestamp: new Date(),
-          eventType: "hitl_request",
-          hitlData: data,
-        });
       });
 
       es.addEventListener("complete", (e) => {
