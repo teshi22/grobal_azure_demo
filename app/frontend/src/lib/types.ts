@@ -40,4 +40,5 @@ export interface ChatMessage {
   timestamp: Date;
   eventType?: SSEEventType;
   hitlData?: HITLRequestEvent;
+  responded?: boolean;
 }

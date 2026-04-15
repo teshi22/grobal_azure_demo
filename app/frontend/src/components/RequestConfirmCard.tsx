@@ -2,6 +2,7 @@
 
 interface Props {
   data: Record<string, unknown>;
+  disabled?: boolean;
   onConfirm: () => void;
   onRevise: (feedback: string) => void;
 }
@@ -13,14 +14,14 @@ const FIELD_CONFIG = [
   { key: "purpose", icon: "🎯", label: "目的" },
 ] as const;
 
-export function RequestConfirmCard({ data, onConfirm, onRevise }: Props) {
+export function RequestConfirmCard({ data, disabled, onConfirm, onRevise }: Props) {
   const handleRevise = () => {
     const feedback = prompt("修正内容を入力してください:");
     if (feedback) onRevise(feedback);
   };
 
   return (
-    <div className="rounded-xl border bg-white p-5 shadow-sm">
+    <div className={`rounded-xl border bg-white p-5 shadow-sm ${disabled ? "opacity-70" : ""}`}>
       <h3 className="mb-3 text-base font-semibold">
         📝 リクエスト内容の確認
       </h3>
@@ -41,23 +42,28 @@ export function RequestConfirmCard({ data, onConfirm, onRevise }: Props) {
         })}
       </div>
 
-      <p className="mt-3 text-xs text-gray-500">
-        この内容で旅程を検索します。よろしいですか？
-      </p>
+      {!disabled && (
+        <p className="mt-3 text-xs text-gray-500">
+          この内容で旅程を検索します。よろしいですか？
+        </p>
+      )}
 
       <div className="mt-4 flex gap-3">
         <button
           onClick={onConfirm}
-          className="rounded-lg bg-blue-600 px-5 py-2 text-sm text-white hover:bg-blue-700"
+          disabled={disabled}
+          className="rounded-lg bg-blue-600 px-5 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
         >
-          ✅ この内容で検索
+          {disabled ? "✅ 確認済み" : "✅ この内容で検索"}
         </button>
-        <button
-          onClick={handleRevise}
-          className="rounded-lg border px-5 py-2 text-sm text-gray-700 hover:bg-gray-50"
-        >
-          ✏️ 修正する
-        </button>
+        {!disabled && (
+          <button
+            onClick={handleRevise}
+            className="rounded-lg border px-5 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            ✏️ 修正する
+          </button>
+        )}
       </div>
     </div>
   );

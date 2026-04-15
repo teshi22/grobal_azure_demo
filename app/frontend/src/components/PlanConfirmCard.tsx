@@ -2,6 +2,7 @@
 
 interface Props {
   data: Record<string, unknown>;
+  disabled?: boolean;
   onConfirm: () => void;
   onRevise: (feedback: string) => void;
 }
@@ -73,7 +74,7 @@ function LegTable({
   );
 }
 
-export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
+export function PlanConfirmCard({ data, disabled, onConfirm, onRevise }: Props) {
   const plan = data as Record<string, unknown>;
   const legs = (plan.transportation_legs as TransportLeg[]) || [];
   const tripType = (plan.trip_type as string) || "宿泊";
@@ -85,7 +86,7 @@ export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
   };
 
   return (
-    <div className="rounded-xl border bg-white p-5 shadow-sm">
+    <div className={`rounded-xl border bg-white p-5 shadow-sm ${disabled ? "opacity-70" : ""}`}>
       <h3 className="mb-3 text-base font-semibold">📋 旅程プラン確認</h3>
 
       <div className="mb-3 flex items-center gap-4 text-sm">
@@ -189,16 +190,19 @@ export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
       <div className="mt-4 flex gap-3">
         <button
           onClick={onConfirm}
-          className="rounded-lg bg-green-600 px-5 py-2 text-sm text-white hover:bg-green-700"
+          disabled={disabled}
+          className="rounded-lg bg-green-600 px-5 py-2 text-sm text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-gray-300"
         >
-          ✅ このプランで確定
+          {disabled ? "✅ 確定済み" : "✅ このプランで確定"}
         </button>
-        <button
-          onClick={handleRevise}
-          className="rounded-lg border px-5 py-2 text-sm text-gray-700 hover:bg-gray-50"
-        >
-          🔄 変更要望
-        </button>
+        {!disabled && (
+          <button
+            onClick={handleRevise}
+            className="rounded-lg border px-5 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            🔄 変更要望
+          </button>
+        )}
       </div>
     </div>
   );

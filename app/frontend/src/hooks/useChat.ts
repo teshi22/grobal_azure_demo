@@ -55,6 +55,15 @@ export function useChat() {
 
       es.addEventListener("hitl_request", (e) => {
         const data = JSON.parse(e.data) as HITLRequestEvent;
+        // メッセージ配列に追加 (チャット履歴に残す)
+        addMessage({
+          id: `hitl-${Date.now()}`,
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          eventType: "hitl_request",
+          hitlData: data,
+        });
         setHitlRequest(data);
         setIsLoading(false);
       });
@@ -114,6 +123,12 @@ export function useChat() {
         await sendMessage(convId, content, idempotencyKey);
 
         if (hitlRequest) {
+          // 現在のHITLメッセージを responded に変更 (カードは残るがボタン無効化)
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.hitlData && !msg.responded ? { ...msg, responded: true } : msg,
+            ),
+          );
           setHitlRequest(null);
         }
       } catch (err) {

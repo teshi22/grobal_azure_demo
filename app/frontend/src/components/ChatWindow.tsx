@@ -27,36 +27,54 @@ export function ChatWindow() {
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* メッセージ一覧 */}
       <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+        {messages.map((msg) => {
+          // HITL カードはメッセージ配列から描画
+          if (msg.hitlData) {
+            const disabled = !!msg.responded;
+            const { hitlData } = msg;
 
-        {/* HITL UI */}
-        {hitlRequest?.type === "request_confirmation" && (
-          <RequestConfirmCard
-            data={hitlRequest.data}
-            onConfirm={() => send("OK")}
-            onRevise={(feedback) => send(feedback)}
-          />
-        )}
-        {hitlRequest?.type === "plan_review" && (
-          <PlanConfirmCard
-            data={hitlRequest.data}
-            onConfirm={() => send("OK")}
-            onRevise={(feedback) => send(feedback)}
-          />
-        )}
-        {hitlRequest?.type === "clarification" && (
-          <ClarificationForm
-            question={
-              (hitlRequest.data.question as string) || hitlRequest.message
+            if (hitlData.type === "request_confirmation") {
+              return (
+                <RequestConfirmCard
+                  key={msg.id}
+                  data={hitlData.data}
+                  disabled={disabled}
+                  onConfirm={() => send("OK")}
+                  onRevise={(feedback) => send(feedback)}
+                />
+              );
             }
-            missingFields={
-              (hitlRequest.data.missing_fields as string[]) || []
+            if (hitlData.type === "plan_review") {
+              return (
+                <PlanConfirmCard
+                  key={msg.id}
+                  data={hitlData.data}
+                  disabled={disabled}
+                  onConfirm={() => send("OK")}
+                  onRevise={(feedback) => send(feedback)}
+                />
+              );
             }
-            onSubmit={(answer) => send(answer)}
-          />
-        )}
+            if (hitlData.type === "clarification") {
+              return (
+                <ClarificationForm
+                  key={msg.id}
+                  question={
+                    (hitlData.data.question as string) || hitlData.message
+                  }
+                  missingFields={
+                    (hitlData.data.missing_fields as string[]) || []
+                  }
+                  disabled={disabled}
+                  onSubmit={(answer) => send(answer)}
+                />
+              );
+            }
+            return null;
+          }
+
+          return <MessageBubble key={msg.id} message={msg} />;
+        })}
 
         {isLoading && (
           <div className="flex items-center gap-2 text-sm text-gray-400">
