@@ -14,6 +14,8 @@ from app.workflow.models import (
     ClarificationHITLRequest,
     ClarificationHITLResponse,
     ClarificationResult,
+    RequestConfirmHITLRequest,
+    RequestConfirmHITLResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,14 +104,28 @@ class UserClarificationStep(Executor):
 
 
 class ClarificationToRequestStep(Executor):
-    """ClarificationResult (complete=true) → enriched_request テキストに変換"""
+    """ClarificationResult (complete=true) → HITL で整理済みリクエストを確認"""
 
     def __init__(self):
         super().__init__(id="clarification_to_request")
 
     @handler(input=ClarificationResult, output=str)
     async def run(self, result, ctx) -> None:
-        await ctx.send_message(result.enriched_request)
+        await ctx.request_info(
+            request_data=RequestConfirmHITLRequest(
+                enriched_request=result.enriched_request,
+            ),
+            response_type=RequestConfirmHITLResponse,
+        )
+
+    @response_handler
+    async def handle_confirm(
+        self,
+        original: RequestConfirmHITLRequest,
+        response: RequestConfirmHITLResponse,
+        ctx: WorkflowContext,
+    ) -> None:
+        await ctx.send_message(original.enriched_request)
 
 
 class ClarificationDirectStep(Executor):

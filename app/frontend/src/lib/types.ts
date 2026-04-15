@@ -18,7 +18,7 @@ export interface AgentResponseEvent {
 }
 
 export interface HITLRequestEvent {
-  type: "plan_review" | "clarification";
+  type: "plan_review" | "clarification" | "request_confirmation";
   data: Record<string, unknown>;
   message: string;
 }

@@ -67,6 +67,38 @@ class ClarificationHITLResponse:
 
 
 @dataclass
+class RequestConfirmHITLRequest:
+    """整理済みリクエストの確認 HITL リクエスト"""
+
+    enriched_request: str
+
+    def convert_to_payload(self) -> str:
+        lines = [
+            "📝 以下の内容で旅程を検索します",
+            "",
+            self.enriched_request,
+            "",
+            "よろしいですか？ → 「OK」で検索開始 / 修正内容をテキストで入力",
+        ]
+        return "\n".join(lines)
+
+
+@dataclass
+class RequestConfirmHITLResponse:
+    """リクエスト確認 HITL レスポンス"""
+
+    confirmed: bool
+    revision: str
+
+    @staticmethod
+    def convert_from_payload(payload: str) -> "RequestConfirmHITLResponse":
+        text = payload.strip()
+        if text.lower() in ("ok", "yes", "y", "はい", "確定", "進めて", "大丈夫"):
+            return RequestConfirmHITLResponse(confirmed=True, revision="")
+        return RequestConfirmHITLResponse(confirmed=False, revision=text)
+
+
+@dataclass
 class PlanReviewRequest:
     """プラン確認 HITL リクエスト"""
 

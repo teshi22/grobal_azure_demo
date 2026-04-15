@@ -122,10 +122,16 @@ def _call_local_server(input_data: Any, conv_id: str) -> dict:
             break
         try:
             event = json.loads(data)
-            if event.get("type") == "response.completed":
+            etype = event.get("type", "")
+            print(f"[SSE] {etype}")
+            if etype == "response.completed":
                 result = event.get("response", {})
+                print(f"[SSE] completed: status={result.get('status')} output_count={len(result.get('output', []))}")
+                for i, item in enumerate(result.get("output", [])):
+                    print(f"[SSE]   output[{i}] type={item.get('type')} name={item.get('name','')}")
         except json.JSONDecodeError:
             pass
+    print(f"[SSE] returning result with {len(result.get('output', []))} output items")
     return result
 
 

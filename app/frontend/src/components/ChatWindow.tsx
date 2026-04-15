@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useChat } from "@/hooks/useChat";
 import { MessageBubble } from "./MessageBubble";
 import { PlanConfirmCard } from "./PlanConfirmCard";
+import { RequestConfirmCard } from "./RequestConfirmCard";
 import { ClarificationForm } from "./ClarificationForm";
 
 export function ChatWindow() {
@@ -31,6 +32,15 @@ export function ChatWindow() {
         ))}
 
         {/* HITL UI */}
+        {hitlRequest?.type === "request_confirmation" && (
+          <RequestConfirmCard
+            enrichedRequest={
+              (hitlRequest.data.enriched_request as string) || ""
+            }
+            onConfirm={() => send("OK")}
+            onRevise={(feedback) => send(feedback)}
+          />
+        )}
         {hitlRequest?.type === "plan_review" && (
           <PlanConfirmCard
             data={hitlRequest.data}

@@ -18,7 +18,11 @@ from app.services.cosmos import (
 )
 from app.services.mcp_client import call_submit_tool
 from app.workflow.builder import create_workflow_builder
-from app.workflow.models import ClarificationHITLRequest, PlanReviewRequest
+from app.workflow.models import (
+    ClarificationHITLRequest,
+    PlanReviewRequest,
+    RequestConfirmHITLRequest,
+)
 from app.workflow.policy import evaluate_policy
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,54 @@ def _format_plan_complete(plan_text: str) -> str:
         return "\n".join(lines)
     except (json.JSONDecodeError, TypeError):
         return f"✅ 出張申請プラン確定\n\n{plan_text}"
+
+
+async def _run_travel_planner_direct(
+    enriched_request: str,
+    conversation_id: str,
+    event_store,
+    conv_store,
+) -> None:
+    """リクエスト確認後: TravelPlanner Foundry Agent を直接呼び出し → PlanReview HITL"""
+    import asyncio
+
+    from app.config import settings
+    from app.workflow.nodes.foundry_base import FoundryAgentNode
+
+    await event_store.append(
+        conversation_id=conversation_id,
+        event_type="status",
+        data=json.dumps(
+            {"step": "travel_planner", "label": "旅程プランを検索中..."},
+            ensure_ascii=False,
+        ),
+    )
+
+    node = FoundryAgentNode(id="travel_planner", agent_name=settings.travel_planner_agent)
+    plan_text, _ = await asyncio.to_thread(node._call_agent, enriched_request)
+
+    # PlanReview HITL イベントを発行
+    plan_review_req = PlanReviewRequest(plan_text=plan_text)
+    hitl_data = _hitl_request_to_event(plan_review_req)
+
+    if hitl_data:
+        await event_store.append(
+            conversation_id=conversation_id,
+            event_type="hitl_request",
+            data=json.dumps(hitl_data, ensure_ascii=False),
+        )
+
+    # 次の resume 用コンテキスト保存
+    conv = await conv_store.get(conversation_id)
+    if conv:
+        conv["hitl_step"] = "plan_review"
+        conv["plan_text"] = plan_text
+        conv["original_input"] = enriched_request
+        conv["status"] = "waiting_for_input"
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await conv_store._container.upsert_item(conv)
+    else:
+        await conv_store.update_status(conversation_id, "waiting_for_input")
 
 
 async def _run_policy_check_and_complete(
@@ -153,6 +205,12 @@ def _hitl_request_to_event(request_data) -> dict | None:
             "message": request_data.convert_to_payload(),
             "data": asdict(request_data),
         }
+    elif isinstance(request_data, RequestConfirmHITLRequest):
+        return {
+            "type": "request_confirmation",
+            "message": request_data.convert_to_payload(),
+            "data": asdict(request_data),
+        }
     elif isinstance(request_data, PlanReviewRequest):
         # plan_text は JSON 文字列 → 構造化データとしてフロントに渡す
         try:
@@ -204,6 +262,8 @@ async def _handle_workflow_result(
             conv["hitl_step"] = hitl_type
             if isinstance(hitl_event.data, PlanReviewRequest):
                 conv["plan_text"] = hitl_event.data.plan_text
+            if isinstance(hitl_event.data, RequestConfirmHITLRequest):
+                conv["enriched_request"] = hitl_event.data.enriched_request
             conv["status"] = "waiting_for_input"
             conv["updated_at"] = datetime.now(timezone.utc).isoformat()
             await conv_store._container.upsert_item(conv)
@@ -262,8 +322,10 @@ async def resume_workflow_async(
 ) -> None:
     """HITL 停止中のワークフローを再開する。
 
+    - request_confirmation (OK): TravelPlanner を直接呼び出し → PlanReview
+    - request_confirmation (修正): 修正内容で再実行
     - clarification: オリジナル入力 + 回答で再実行
-    - plan_review (OK): プランを最終出力として完了
+    - plan_review (OK): 規約チェック → 申請送信
     - plan_review (変更): オリジナル入力 + 変更要望で再実行
     """
     event_store = get_event_store()
@@ -283,11 +345,20 @@ async def resume_workflow_async(
         hitl_step = conv.get("hitl_step", "clarification") if conv else "clarification"
         original_input = conv.get("original_input", "") if conv else ""
         plan_text = conv.get("plan_text", "") if conv else ""
+        enriched_request = conv.get("enriched_request", "") if conv else ""
 
-        # プラン確認で承認 → 規約チェック → 申請送信
         is_approved = user_input.strip().lower() in (
             "ok", "yes", "y", "はい", "確定", "進めて", "大丈夫",
         )
+
+        # リクエスト確認で承認 → TravelPlanner を直接呼び出し
+        if hitl_step == "request_confirmation" and is_approved and enriched_request:
+            await _run_travel_planner_direct(
+                enriched_request, conversation_id, event_store, conv_store,
+            )
+            return
+
+        # プラン確認で承認 → 規約チェック → 申請送信
         if hitl_step == "plan_review" and is_approved and plan_text:
             await _run_policy_check_and_complete(
                 plan_text, conversation_id, event_store, conv_store,
