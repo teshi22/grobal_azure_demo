@@ -24,8 +24,11 @@ _conversation_store: ConversationStore | None = None
 _event_store: EventStore | None = None
 
 
-def get_cosmos_client() -> CosmosClient:
+def get_cosmos_client() -> CosmosClient | None:
     global _cosmos_client
+    if not settings.cosmos_endpoint:
+        logger.warning("COSMOS_ENDPOINT not set — Cosmos DB disabled")
+        return None
     if _cosmos_client is None:
         credential = DefaultAzureCredential()
         _cosmos_client = CosmosClient(settings.cosmos_endpoint, credential=credential)
