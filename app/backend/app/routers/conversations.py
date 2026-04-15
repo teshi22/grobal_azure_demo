@@ -6,6 +6,7 @@ GET  /api/conversations/{id}     — 会話情報取得
 """
 
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
@@ -26,12 +27,14 @@ logger = logging.getLogger(__name__)
 @router.post("/conversations", response_model=ConversationResponse)
 async def create_conversation(req: CreateConversationRequest):
     """新規会話を作成する"""
+    t0 = time.perf_counter()
     conversation_id = str(uuid.uuid4())
     store = get_conversation_store()
     await store.create(
         conversation_id=conversation_id,
         user_id=req.user_id,
     )
+    logger.info("[PERF] create_conversation: %.3fs", time.perf_counter() - t0)
     return ConversationResponse(
         conversation_id=conversation_id,
         status="created",
@@ -66,9 +69,12 @@ async def send_message(
     冪等性キーで重複送信を防止する。
     """
     store = get_conversation_store()
+    t0 = time.perf_counter()
     conv = await store.get(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    t1 = time.perf_counter()
+    logger.info("[PERF] send_message get_conv: %.3fs", t1 - t0)
 
     # 冪等性チェック
     if x_idempotency_key:
@@ -76,6 +82,8 @@ async def send_message(
         existing = await event_store.get_by_idempotency_key(
             conversation_id, x_idempotency_key
         )
+        t2 = time.perf_counter()
+        logger.info("[PERF] send_message idempotency: %.3fs", t2 - t1)
         if existing:
             return MessageResponse(
                 message_id=existing["message_id"],
@@ -107,6 +115,8 @@ async def send_message(
             detail=f"Conversation is in '{status}' state, cannot accept messages",
         )
 
-    await store.update_status(conversation_id, "processing")
+    # 既に取得済みの conv を再利用 (update_status の再 get を省略)
+    await store.update_status_direct(conv, "processing")
+    logger.info("[PERF] send_message total: %.3fs", time.perf_counter() - t0)
 
     return MessageResponse(message_id=message_id, status="accepted")

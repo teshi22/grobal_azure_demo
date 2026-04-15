@@ -15,6 +15,9 @@ from app.routers import conversations, stream
 
 logger = logging.getLogger(__name__)
 
+# アプリ全体のログレベルを INFO に設定
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/app/static"))
 
 
@@ -26,6 +29,24 @@ async def lifespan(app: FastAPI):
 
     app.state.cosmos_client = get_cosmos_client()
     logger.info("Cosmos DB client initialized")
+
+    # Pre-warm: Cosmos 接続 + Azure AD トークン取得
+    try:
+        from app.services.cosmos import get_conversation_store
+        store = get_conversation_store()
+        await store._container.read_item("__warmup__", partition_key="__warmup__")
+    except Exception:
+        pass  # ドキュメントが無くてもOK、接続が確立されれば良い
+    logger.info("Cosmos DB connection pre-warmed")
+
+    # Pre-warm: Foundry OpenAI クライアント初期化
+    try:
+        from app.services.foundry import get_openai_client
+        get_openai_client()
+        logger.info("OpenAI client pre-warmed")
+    except Exception as e:
+        logger.warning("OpenAI client pre-warm failed: %s", e)
+
     yield
     if hasattr(app.state, "cosmos_client") and app.state.cosmos_client:
         await app.state.cosmos_client.close()

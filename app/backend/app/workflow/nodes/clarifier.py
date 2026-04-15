@@ -40,11 +40,14 @@ DEFAULT_DEPARTURE = "大阪"
 # ---------------------------------------------------------------------------
 def _extract_fields(user_input: str) -> ExtractedRequest:
     """RequestClarifier Foundry Agent でユーザー入力から4項目を抽出する"""
+    import time as _time
+    t0 = _time.perf_counter()
     openai_client = get_openai_client()
     try:
         conv = openai_client.conversations.create(
             items=[{"type": "message", "role": "user", "content": user_input}],
         )
+        t1 = _time.perf_counter()
         response = openai_client.responses.create(
             conversation=conv.id,
             extra_body={
@@ -54,13 +57,26 @@ def _extract_fields(user_input: str) -> ExtractedRequest:
                 }
             },
         )
+        t2 = _time.perf_counter()
         text = response.output_text
         logger.info("Agent raw response: %s", text[:500])
 
-        try:
-            openai_client.conversations.delete(conversation_id=conv.id)
-        except Exception:
-            pass
+        # conversation 削除はバックグラウンドで実行 (10秒の待ちを排除)
+        conv_id_to_delete = conv.id
+        def _cleanup():
+            try:
+                openai_client.conversations.delete(conversation_id=conv_id_to_delete)
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=_cleanup, daemon=True).start()
+
+        t3 = _time.perf_counter()
+        logger.info(
+            "[PERF] _extract_fields: conv_create=%.3fs, responses=%.3fs, "
+            "total=%.3fs",
+            t1 - t0, t2 - t1, t3 - t0,
+        )
 
         return _parse_agent_response(text)
 

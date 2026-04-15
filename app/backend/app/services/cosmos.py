@@ -23,39 +23,47 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# EventNotifier — SSE 接続にイベント書き込みを即座に通知する
+# EventBus — SSE 接続にイベントを即時配信するインメモリ pub/sub
 # ---------------------------------------------------------------------------
-class EventNotifier:
-    """インメモリ通知: EventStore.append → SSE ループを即座に起こす"""
+class EventBus:
+    """per-conversation asyncio.Queue ベースのイベントバス。
+
+    - subscribe() で Queue を取得、SSE ループが読む
+    - publish() で全 subscriber に即座に配信
+    - Cosmos 読み取りを SSE クリティカルパスから排除
+    """
 
     def __init__(self):
-        self._events: dict[str, asyncio.Event] = {}
+        self._subscribers: dict[str, list[asyncio.Queue]] = {}
 
-    def notify(self, conversation_id: str) -> None:
-        ev = self._events.get(conversation_id)
-        if ev:
-            ev.set()
+    def subscribe(self, conversation_id: str) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        self._subscribers.setdefault(conversation_id, []).append(q)
+        return q
 
-    async def wait(self, conversation_id: str, timeout: float = 15.0) -> bool:
-        if conversation_id not in self._events:
-            self._events[conversation_id] = asyncio.Event()
-        ev = self._events[conversation_id]
-        ev.clear()
-        try:
-            await asyncio.wait_for(ev.wait(), timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
+    def unsubscribe(self, conversation_id: str, q: asyncio.Queue) -> None:
+        subs = self._subscribers.get(conversation_id)
+        if subs:
+            try:
+                subs.remove(q)
+            except ValueError:
+                pass
+            if not subs:
+                del self._subscribers[conversation_id]
 
-    def cleanup(self, conversation_id: str) -> None:
-        self._events.pop(conversation_id, None)
+    def publish(self, conversation_id: str, event: dict) -> None:
+        for q in self._subscribers.get(conversation_id, []):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
 
 
-_notifier = EventNotifier()
+_event_bus = EventBus()
 
 
-def get_event_notifier() -> EventNotifier:
-    return _notifier
+def get_event_bus() -> EventBus:
+    return _event_bus
 
 _cosmos_client: CosmosClient | None = None
 _conversation_store: ConversationStore | None = None
@@ -116,6 +124,12 @@ class ConversationStore:
             conv["status"] = status
             conv["updated_at"] = datetime.now(timezone.utc).isoformat()
             await self._container.upsert_item(conv)
+
+    async def update_status_direct(self, conv: dict, status: str) -> None:
+        """既に取得済みの conv doc のステータスを更新 (再 get 不要)"""
+        conv["status"] = status
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await self._container.upsert_item(conv)
 
 
 def get_conversation_store() -> ConversationStore:
@@ -179,8 +193,12 @@ class EventStore:
         }
         await self._container.create_item(doc)
 
-        # SSE ループを即座に起こす
-        _notifier.notify(conversation_id)
+        # SSE subscriber に即時配信
+        _event_bus.publish(conversation_id, {
+            "event_index": event_index,
+            "event_type": event_type,
+            "data": data_str,
+        })
 
         return event_index
 

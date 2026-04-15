@@ -7,6 +7,7 @@ Executor としてラップする共通基盤。
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from agent_framework import Executor, handler
@@ -43,12 +44,15 @@ class FoundryAgentNode(Executor):
         await ctx.send_message(text)
 
     def _call_agent(self, input_text: str) -> tuple[str, dict | None]:
+        t0 = time.perf_counter()
         openai_client = get_openai_client()
+        t1 = time.perf_counter()
         func_result = None
 
         conv = openai_client.conversations.create(
             items=[{"type": "message", "role": "user", "content": input_text}],
         )
+        t2 = time.perf_counter()
 
         response = openai_client.responses.create(
             conversation=conv.id,
@@ -59,6 +63,7 @@ class FoundryAgentNode(Executor):
                 }
             },
         )
+        t3 = time.perf_counter()
 
         # FunctionTool の function_call をハンドリング
         if self.function_handler:
@@ -90,9 +95,21 @@ class FoundryAgentNode(Executor):
 
         text = response.output_text
 
-        try:
-            openai_client.conversations.delete(conversation_id=conv.id)
-        except Exception:
-            pass
+        # conversation 削除はバックグラウンドで実行 (待ちを排除)
+        conv_id_to_delete = conv.id
+        def _cleanup():
+            try:
+                openai_client.conversations.delete(conversation_id=conv_id_to_delete)
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=_cleanup, daemon=True).start()
+
+        t4 = time.perf_counter()
+        logger.info(
+            "[PERF] _call_agent(%s): client=%.3fs, conv_create=%.3fs, "
+            "responses=%.3fs, total=%.3fs",
+            self.agent_name, t1 - t0, t2 - t1, t3 - t2, t4 - t0,
+        )
 
         return text, func_result

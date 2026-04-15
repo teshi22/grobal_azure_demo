@@ -7,6 +7,7 @@ BackgroundTasks から呼ばれ、ワークフローを実行し、
 import asyncio
 import json
 import logging
+import time
 import traceback
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -76,6 +77,7 @@ async def _run_travel_planner_direct(
     from app.config import settings
     from app.workflow.nodes.foundry_base import FoundryAgentNode
 
+    t0 = time.perf_counter()
     await event_store.append(
         conversation_id=conversation_id,
         event_type="status",
@@ -87,6 +89,8 @@ async def _run_travel_planner_direct(
 
     node = FoundryAgentNode(id="travel_planner", agent_name=settings.travel_planner_agent)
     plan_text, _ = await asyncio.to_thread(node._call_agent, enriched_request)
+    t1 = time.perf_counter()
+    logger.info("[PERF] TravelPlanner agent: %.3fs", t1 - t0)
 
     # PlanReview HITL イベントを発行
     plan_review_req = PlanReviewRequest(plan_text=plan_text)
@@ -110,6 +114,8 @@ async def _run_travel_planner_direct(
         await conv_store._container.upsert_item(conv)
     else:
         await conv_store.update_status(conversation_id, "waiting_for_input")
+    t2 = time.perf_counter()
+    logger.info("[PERF] TravelPlanner total: %.3fs", t2 - t0)
 
 
 async def _run_policy_check_and_complete(
@@ -295,6 +301,7 @@ async def run_workflow_async(
     conv_store = get_conversation_store()
 
     try:
+        t0 = time.perf_counter()
         await event_store.append(
             conversation_id=conversation_id,
             event_type="status",
@@ -303,17 +310,23 @@ async def run_workflow_async(
             ),
             message_id=message_id,
         )
+        t1 = time.perf_counter()
+        logger.info("[PERF] status append: %.3fs", t1 - t0)
 
         builder = create_workflow_builder()
 
         workflow = builder.build()
         messages = [Message(role="user", contents=[user_input])]
         events = await workflow.run(messages)
+        t2 = time.perf_counter()
+        logger.info("[PERF] workflow.run: %.3fs", t2 - t1)
 
         await _handle_workflow_result(
             events, conversation_id, event_store, conv_store,
             original_input=user_input,
         )
+        t3 = time.perf_counter()
+        logger.info("[PERF] handle_result: %.3fs | total: %.3fs", t3 - t2, t3 - t0)
 
     except Exception as e:
         logger.error(f"Workflow error: {e}\n{traceback.format_exc()}")
@@ -431,6 +444,7 @@ async def resume_workflow_async(
     conv_store = get_conversation_store()
 
     try:
+        t0 = time.perf_counter()
         await event_store.append(
             conversation_id=conversation_id,
             event_type="status",
@@ -441,6 +455,8 @@ async def resume_workflow_async(
         )
 
         conv = await conv_store.get(conversation_id)
+        t1 = time.perf_counter()
+        logger.info("[PERF] resume setup (append+get): %.3fs", t1 - t0)
         hitl_step = conv.get("hitl_step", "clarification") if conv else "clarification"
         original_input = conv.get("original_input", "") if conv else ""
         plan_text = conv.get("plan_text", "") if conv else ""
