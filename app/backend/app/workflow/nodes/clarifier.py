@@ -55,6 +55,7 @@ def _extract_fields(user_input: str) -> ExtractedRequest:
             },
         )
         text = response.output_text
+        logger.info("Agent raw response: %s", text[:500])
 
         try:
             openai_client.conversations.delete(conversation_id=conv.id)
@@ -70,22 +71,29 @@ def _extract_fields(user_input: str) -> ExtractedRequest:
 
 def _parse_agent_response(text: str) -> ExtractedRequest:
     """Agent の応答テキストから JSON を抽出して ExtractedRequest に変換"""
-    # ```json ... ``` ブロックを優先抽出
+    # 1. ```json ... ``` ブロックを優先抽出
     m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-    raw = m.group(1) if m else text
+    if m:
+        raw = m.group(1)
+    else:
+        # 2. フォールバック: テキスト中の JSON オブジェクト {...} を探す
+        m2 = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+        raw = m2.group(0) if m2 else text
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("JSON parse failed from agent response: %s", text[:200])
+        logger.warning("JSON parse failed from agent response: %s", text[:300])
         return ExtractedRequest()
 
-    return ExtractedRequest(
+    result = ExtractedRequest(
         departure=str(data.get("departure", "") or "").strip(),
         destination=str(data.get("destination", "") or "").strip(),
         schedule=str(data.get("schedule", "") or "").strip(),
         purpose=str(data.get("purpose", "") or "").strip(),
     )
+    logger.info("Parsed fields: %s", result.model_dump())
+    return result
 
 
 def _merge_fields(
@@ -175,14 +183,16 @@ class UserClarificationStep(Executor):
 
     @handler(input=ClarificationResult, output=str)
     async def handle_incomplete(self, result, ctx) -> None:
-        ctx.set_state(
-            "clarification_round", ctx.get_state("clarification_round", 0) + 1
-        )
+        round_num = ctx.get_state("clarification_round", 0) + 1
+        ctx.set_state("clarification_round", round_num)
         await ctx.request_info(
             request_data=ClarificationHITLRequest(
                 question=result.question or "追加情報を教えてください。",
                 missing_fields=result.missing_fields,
                 original_input=ctx.get_state("original_input", ""),
+                extracted_fields=ctx.get_state("request_fields") or {},
+                departure_is_default=ctx.get_state("departure_is_default", False),
+                clarification_round=round_num,
             ),
             response_type=ClarificationHITLResponse,
         )

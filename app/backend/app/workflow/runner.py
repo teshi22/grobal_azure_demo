@@ -4,6 +4,7 @@ BackgroundTasks から呼ばれ、ワークフローを実行し、
 進行状況をイベントストアに追記する。
 """
 
+import asyncio
 import json
 import logging
 import traceback
@@ -22,6 +23,13 @@ from app.workflow.models import (
     ClarificationHITLRequest,
     PlanReviewRequest,
     RequestConfirmHITLRequest,
+)
+from app.workflow.nodes.clarifier import (
+    DEFAULT_DEPARTURE,
+    _build_enriched_request,
+    _check_completeness,
+    _extract_fields,
+    _merge_fields,
 )
 from app.workflow.policy import evaluate_policy
 
@@ -264,6 +272,10 @@ async def _handle_workflow_result(
                 conv["plan_text"] = hitl_event.data.plan_text
             if isinstance(hitl_event.data, RequestConfirmHITLRequest):
                 conv["enriched_request"] = hitl_event.data.enriched_request
+            if isinstance(hitl_event.data, ClarificationHITLRequest):
+                conv["extracted_fields"] = hitl_event.data.extracted_fields or {}
+                conv["departure_is_default"] = hitl_event.data.departure_is_default
+                conv["clarification_round"] = hitl_event.data.clarification_round
             conv["status"] = "waiting_for_input"
             conv["updated_at"] = datetime.now(timezone.utc).isoformat()
             await conv_store._container.upsert_item(conv)
@@ -315,6 +327,93 @@ async def run_workflow_async(
         await conv_store.update_status(conversation_id, "error")
 
 
+async def _run_clarification_direct(
+    user_input: str,
+    conversation_id: str,
+    event_store,
+    conv_store,
+    conv: dict,
+) -> None:
+    """clarification 再開: 前回の抽出結果を保持し、新しい入力から差分抽出 → マージ"""
+    prev_fields = conv.get("extracted_fields") or {}
+    original_input = conv.get("original_input", "")
+    departure_is_default = conv.get("departure_is_default", False)
+    clarification_round = conv.get("clarification_round", 0) + 1
+
+    # ユーザーの追加回答だけを Agent に渡して抽出
+    extracted = await asyncio.to_thread(_extract_fields, user_input)
+    new_fields = extracted.model_dump()
+    fields = _merge_fields(new_fields, prev_fields)
+
+    # 出発地のデフォルト適用
+    if not fields["departure"]:
+        fields["departure"] = DEFAULT_DEPARTURE
+        departure_is_default = True
+
+    updated_input = f"{original_input}\n{user_input}" if original_input else user_input
+
+    complete, missing_labels, question = _check_completeness(fields)
+    logger.info(
+        "Clarification direct: fields=%s, complete=%s, missing=%s, round=%d",
+        fields, complete, missing_labels, clarification_round,
+    )
+
+    if complete or clarification_round >= 3:
+        # 全項目揃った → リクエスト確認 HITL
+        enriched_request = _build_enriched_request(fields)
+        departure_display = fields["departure"]
+        if departure_is_default:
+            departure_display += "（既定値）"
+
+        confirm_req = RequestConfirmHITLRequest(
+            enriched_request=enriched_request,
+            departure=departure_display,
+            destination=fields.get("destination", ""),
+            schedule=fields.get("schedule", ""),
+            purpose=fields.get("purpose", ""),
+        )
+        hitl_data = _hitl_request_to_event(confirm_req)
+        if hitl_data:
+            await event_store.append(
+                conversation_id=conversation_id,
+                event_type="hitl_request",
+                data=json.dumps(hitl_data, ensure_ascii=False),
+            )
+        # Cosmos に保存
+        conv["hitl_step"] = "request_confirmation"
+        conv["enriched_request"] = enriched_request
+        conv["original_input"] = updated_input
+        conv["extracted_fields"] = fields
+        conv["status"] = "waiting_for_input"
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await conv_store._container.upsert_item(conv)
+    else:
+        # まだ不足 → 再度 clarification HITL
+        clarify_req = ClarificationHITLRequest(
+            question=question,
+            missing_fields=missing_labels,
+            original_input=updated_input,
+            extracted_fields=fields,
+            departure_is_default=departure_is_default,
+            clarification_round=clarification_round,
+        )
+        hitl_data = _hitl_request_to_event(clarify_req)
+        if hitl_data:
+            await event_store.append(
+                conversation_id=conversation_id,
+                event_type="hitl_request",
+                data=json.dumps(hitl_data, ensure_ascii=False),
+            )
+        conv["hitl_step"] = "clarification"
+        conv["original_input"] = updated_input
+        conv["extracted_fields"] = fields
+        conv["departure_is_default"] = departure_is_default
+        conv["clarification_round"] = clarification_round
+        conv["status"] = "waiting_for_input"
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await conv_store._container.upsert_item(conv)
+
+
 async def resume_workflow_async(
     conversation_id: str,
     user_input: str,
@@ -322,9 +421,9 @@ async def resume_workflow_async(
 ) -> None:
     """HITL 停止中のワークフローを再開する。
 
+    - clarification: 前回の抽出結果を保持しつつ追加入力から差分抽出
     - request_confirmation (OK): TravelPlanner を直接呼び出し → PlanReview
     - request_confirmation (修正): 修正内容で再実行
-    - clarification: オリジナル入力 + 回答で再実行
     - plan_review (OK): 規約チェック → 申請送信
     - plan_review (変更): オリジナル入力 + 変更要望で再実行
     """
@@ -350,6 +449,13 @@ async def resume_workflow_async(
         is_approved = user_input.strip().lower() in (
             "ok", "yes", "y", "はい", "確定", "進めて", "大丈夫",
         )
+
+        # clarification → 前回の抽出結果を保持して差分抽出
+        if hitl_step == "clarification" and conv:
+            await _run_clarification_direct(
+                user_input, conversation_id, event_store, conv_store, conv,
+            )
+            return
 
         # リクエスト確認で承認 → TravelPlanner を直接呼び出し
         if hitl_step == "request_confirmation" and is_approved and enriched_request:

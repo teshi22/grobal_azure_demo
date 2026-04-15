@@ -49,6 +49,9 @@ class ClarificationHITLRequest:
     question: str
     missing_fields: list[str]
     original_input: str
+    extracted_fields: dict | None = None
+    departure_is_default: bool = False
+    clarification_round: int = 0
 
     def convert_to_payload(self) -> str:
         lines = ["❓ 情報が不足しています", ""]

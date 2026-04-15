@@ -1,45 +1,19 @@
 "use client";
 
 interface Props {
-  enrichedRequest: string;
+  data: Record<string, unknown>;
   onConfirm: () => void;
   onRevise: (feedback: string) => void;
 }
 
-/** enriched_request テキストを構造化フィールドに分解 */
-function parseFields(text: string) {
-  const iconMap: [RegExp, string, string][] = [
-    [/出発地/, "📍", "出発地"],
-    [/目的地/, "🏢", "目的地"],
-    [/日程/, "📅", "日程"],
-    [/(?:出張)?目的/, "🎯", "目的"],
-  ];
+const FIELD_CONFIG = [
+  { key: "departure", icon: "📍", label: "出発地" },
+  { key: "destination", icon: "🏢", label: "目的地" },
+  { key: "schedule", icon: "📅", label: "日程" },
+  { key: "purpose", icon: "🎯", label: "目的" },
+] as const;
 
-  const parts = text
-    .split(/[、。]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  return parts.map((part) => {
-    for (const [re, icon, label] of iconMap) {
-      if (re.test(part)) {
-        const value = part
-          .replace(/^.*?[はが:：]\s*/, "")
-          .replace(/です$/, "");
-        return { icon, label, value };
-      }
-    }
-    return { icon: "📝", label: "", value: part.replace(/です$/, "") };
-  });
-}
-
-export function RequestConfirmCard({
-  enrichedRequest,
-  onConfirm,
-  onRevise,
-}: Props) {
-  const fields = parseFields(enrichedRequest);
-
+export function RequestConfirmCard({ data, onConfirm, onRevise }: Props) {
   const handleRevise = () => {
     const feedback = prompt("修正内容を入力してください:");
     if (feedback) onRevise(feedback);
@@ -52,17 +26,19 @@ export function RequestConfirmCard({
       </h3>
 
       <div className="space-y-2 text-sm">
-        {fields.map((f, i) => (
-          <div key={i} className="flex items-start gap-2">
-            <span className="shrink-0">{f.icon}</span>
-            <span>
-              {f.label && (
-                <span className="font-medium">{f.label}: </span>
-              )}
-              {f.value}
-            </span>
-          </div>
-        ))}
+        {FIELD_CONFIG.map(({ key, icon, label }) => {
+          const value = data[key] as string | undefined;
+          if (!value) return null;
+          return (
+            <div key={key} className="flex items-start gap-2">
+              <span className="shrink-0">{icon}</span>
+              <span>
+                <span className="font-medium">{label}: </span>
+                {value}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       <p className="mt-3 text-xs text-gray-500">

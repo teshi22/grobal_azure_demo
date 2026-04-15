@@ -34,9 +34,7 @@ export function ChatWindow() {
         {/* HITL UI */}
         {hitlRequest?.type === "request_confirmation" && (
           <RequestConfirmCard
-            enrichedRequest={
-              (hitlRequest.data.enriched_request as string) || ""
-            }
+            data={hitlRequest.data}
             onConfirm={() => send("OK")}
             onRevise={(feedback) => send(feedback)}
           />
@@ -50,7 +48,9 @@ export function ChatWindow() {
         )}
         {hitlRequest?.type === "clarification" && (
           <ClarificationForm
-            question={hitlRequest.message}
+            question={
+              (hitlRequest.data.question as string) || hitlRequest.message
+            }
             missingFields={
               (hitlRequest.data.missing_fields as string[]) || []
             }
