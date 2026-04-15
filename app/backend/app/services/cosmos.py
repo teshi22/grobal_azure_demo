@@ -186,48 +186,114 @@ def get_event_store() -> EventStore:
 # CosmosCheckpointRepository (Agent Framework インターフェース実装)
 # ---------------------------------------------------------------------------
 class CosmosCheckpointRepository:
-    """Agent Framework の CheckpointRepository を Cosmos DB で実装する。
+    """Agent Framework の CheckpointStorage プロトコルを Cosmos DB で実装する。
 
-    checkpoint_id ごとに 1 ドキュメントとして保存。
-    conversation_id をパーティションキーとして使用。
+    WorkflowCheckpoint を JSON シリアライズして Cosmos DB に保存。
+    checkpoint_id を conversation_id として partition key に使用。
     """
 
     def __init__(self):
         self._container = _get_container(settings.cosmos_checkpoint_container)
 
-    async def save(self, conversation_id: str, checkpoint_data: dict) -> str:
-        """チェックポイントを保存"""
-        import uuid
+    async def save(self, checkpoint) -> str:
+        """WorkflowCheckpoint を保存し checkpoint_id を返す"""
+        import dataclasses
 
-        checkpoint_id = checkpoint_data.get("checkpoint_id", str(uuid.uuid4()))
-        doc = {
-            "id": checkpoint_id,
-            "conversation_id": conversation_id,
-            **checkpoint_data,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await self._container.upsert_item(doc)
-        return checkpoint_id
-
-    async def load(self, conversation_id: str) -> dict | None:
-        """最新チェックポイントを取得"""
-        query = (
-            "SELECT * FROM c "
-            "WHERE c.conversation_id = @cid "
-            "ORDER BY c.saved_at DESC"
+        doc = dataclasses.asdict(checkpoint)
+        doc["id"] = checkpoint.checkpoint_id
+        doc["conversation_id"] = checkpoint.checkpoint_id
+        # Complex objects need safe JSON serialization
+        doc["pending_request_info_events"] = json.loads(
+            json.dumps(doc["pending_request_info_events"], default=str)
         )
-        params = [{"name": "@cid", "value": conversation_id}]
+        doc["messages"] = json.loads(
+            json.dumps(doc["messages"], default=str)
+        )
+        doc["state"] = json.loads(
+            json.dumps(doc["state"], default=str)
+        )
+        logger.info(
+            f"Saving checkpoint: id={checkpoint.checkpoint_id}, "
+            f"workflow={checkpoint.workflow_name}"
+        )
+        await self._container.upsert_item(doc)
+        return checkpoint.checkpoint_id
+
+    async def load(self, checkpoint_id: str):
+        """checkpoint_id でチェックポイントを取得"""
+        logger.info(f"Loading checkpoint: id={checkpoint_id}")
+        try:
+            doc = await self._container.read_item(
+                checkpoint_id, partition_key=checkpoint_id
+            )
+            return self._doc_to_checkpoint(doc)
+        except Exception:
+            from agent_framework._workflows._checkpoint import (
+                WorkflowCheckpointException,
+            )
+            raise WorkflowCheckpointException(
+                f"Checkpoint {checkpoint_id} not found"
+            )
+
+    async def list_checkpoints(self, *, workflow_name: str) -> list:
+        """workflow_name に一致するチェックポイントを一覧取得"""
+        query = (
+            "SELECT * FROM c WHERE c.workflow_name = @wn "
+            "ORDER BY c.timestamp DESC"
+        )
+        params = [{"name": "@wn", "value": workflow_name}]
         items = [
             item
             async for item in self._container.query_items(
-                query, parameters=params, max_item_count=1
+                query, parameters=params, enable_cross_partition_query=True
             )
         ]
-        return items[0] if items else None
+        return [self._doc_to_checkpoint(i) for i in items]
 
-    async def delete(self, conversation_id: str, checkpoint_id: str) -> None:
+    async def list_checkpoint_ids(self, *, workflow_name: str) -> list[str]:
+        """workflow_name に一致するチェックポイント ID を一覧取得"""
+        query = (
+            "SELECT c.id FROM c WHERE c.workflow_name = @wn "
+            "ORDER BY c.timestamp DESC"
+        )
+        params = [{"name": "@wn", "value": workflow_name}]
+        return [
+            item["id"]
+            async for item in self._container.query_items(
+                query, parameters=params, enable_cross_partition_query=True
+            )
+        ]
+
+    async def delete(self, checkpoint_id: str) -> bool:
         """チェックポイントを削除"""
         try:
-            await self._container.delete_item(checkpoint_id, partition_key=conversation_id)
+            await self._container.delete_item(
+                checkpoint_id, partition_key=checkpoint_id
+            )
+            return True
         except Exception:
             logger.warning(f"Failed to delete checkpoint {checkpoint_id}")
+            return False
+
+    async def get_latest(self, *, workflow_name: str):
+        """workflow_name の最新チェックポイントを取得"""
+        checkpoints = await self.list_checkpoints(workflow_name=workflow_name)
+        return checkpoints[0] if checkpoints else None
+
+    def _doc_to_checkpoint(self, doc: dict):
+        """Cosmos DB ドキュメントを WorkflowCheckpoint に変換"""
+        from agent_framework._workflows._checkpoint import WorkflowCheckpoint
+
+        return WorkflowCheckpoint(
+            workflow_name=doc.get("workflow_name", ""),
+            graph_signature_hash=doc.get("graph_signature_hash", ""),
+            checkpoint_id=doc.get("checkpoint_id", doc["id"]),
+            previous_checkpoint_id=doc.get("previous_checkpoint_id"),
+            timestamp=doc.get("timestamp", ""),
+            messages=doc.get("messages", {}),
+            state=doc.get("state", {}),
+            pending_request_info_events=doc.get("pending_request_info_events", {}),
+            iteration_count=doc.get("iteration_count", 0),
+            metadata=doc.get("metadata", {}),
+            version=doc.get("version", "1"),
+        )

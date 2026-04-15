@@ -1,6 +1,7 @@
 """出張申請エージェント — FastAPI バックエンド + 静的ファイル配信"""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from app.routers import conversations, stream
 
 logger = logging.getLogger(__name__)
 
-STATIC_DIR = Path("/app/static")
+STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/app/static"))
 
 
 @asynccontextmanager
