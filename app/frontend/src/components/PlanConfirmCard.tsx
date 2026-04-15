@@ -112,6 +112,56 @@ export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
         </div>
       )}
 
+      {tripType === "宿泊" && (
+        <div className="mt-3">
+          <p className="mb-1 text-xs font-semibold text-gray-500">
+            🏨 宿泊
+          </p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-gray-500">
+                <th className="py-1 pr-2 font-medium">宿泊先</th>
+                <th className="py-1 pr-2 text-right font-medium">1泊料金</th>
+                <th className="py-1 pr-2 text-right font-medium">泊数</th>
+                <th className="py-1 text-right font-medium">金額</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-gray-100">
+                <td className="py-1 pr-2">
+                  {(plan.hotel as string) || "—"}
+                </td>
+                <td className="py-1 pr-2 text-right whitespace-nowrap">
+                  ¥{((plan.hotel_cost_per_night as number) || 0).toLocaleString()}
+                </td>
+                <td className="py-1 pr-2 text-right">
+                  {(plan.hotel_nights as number) || 1}泊
+                </td>
+                <td className="py-1 text-right whitespace-nowrap">
+                  ¥{(
+                    ((plan.hotel_cost_per_night as number) || 0) *
+                    ((plan.hotel_nights as number) || 1)
+                  ).toLocaleString()}
+                </td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr className="text-xs font-medium text-gray-600">
+                <td colSpan={3} className="pt-1 text-right pr-2">
+                  小計
+                </td>
+                <td className="pt-1 text-right whitespace-nowrap">
+                  ¥{(
+                    ((plan.hotel_cost_per_night as number) || 0) *
+                    ((plan.hotel_nights as number) || 1)
+                  ).toLocaleString()}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
       <div className="mt-4 space-y-1 rounded-lg bg-gray-50 px-4 py-3 text-sm">
         <div className="flex justify-between">
           <span className="font-medium">🚄 交通費計</span>
@@ -121,11 +171,12 @@ export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
         </div>
         {tripType === "宿泊" && (
           <div className="flex justify-between">
-            <span className="font-medium">🏨 宿泊</span>
+            <span className="font-medium">🏨 宿泊費計</span>
             <span>
-              {(plan.hotel as string) || "—"} ¥
-              {((plan.hotel_cost_per_night as number) || 0).toLocaleString()}
-              /泊 × {(plan.hotel_nights as number) || 1}泊
+              ¥{(
+                ((plan.hotel_cost_per_night as number) || 0) *
+                ((plan.hotel_nights as number) || 1)
+              ).toLocaleString()}
             </span>
           </div>
         )}
