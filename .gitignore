@@ -1,9 +1,11 @@
-
 .playwright-mcp/
 __pycache__/
+*.pyc
+.env
+.venv/
+checkpoints/
 checkpoints_test/
 checkpoints_bench/
-*.pyc
 
 # App (Frontend + Backend)
 app/frontend/node_modules/

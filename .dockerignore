@@ -6,7 +6,8 @@ __pycache__
 *.pyc
 checkpoints/
 infra/
+scripts/
 *.md
 deploy.sh
-instruction.md
 .dockerignore
+.playwright-mcp/
