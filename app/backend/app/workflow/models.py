@@ -13,6 +13,15 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 # Pydantic モデル (ワークフロー内ルーティング)
 # ---------------------------------------------------------------------------
+class ExtractedRequest(BaseModel):
+    """LLM 構造化出力用 — ユーザー入力から4項目を抽出"""
+
+    departure: str = Field(default="", description="出発地")
+    destination: str = Field(default="", description="目的地")
+    schedule: str = Field(default="", description="日程")
+    purpose: str = Field(default="", description="出張目的")
+
+
 class ClarificationResult(BaseModel):
     """RequestClarifier の判定結果"""
 
@@ -71,15 +80,23 @@ class RequestConfirmHITLRequest:
     """整理済みリクエストの確認 HITL リクエスト"""
 
     enriched_request: str
+    departure: str = ""
+    destination: str = ""
+    schedule: str = ""
+    purpose: str = ""
 
     def convert_to_payload(self) -> str:
-        lines = [
-            "📝 以下の内容で旅程を検索します",
-            "",
-            self.enriched_request,
-            "",
-            "よろしいですか？ → 「OK」で検索開始 / 修正内容をテキストで入力",
-        ]
+        lines = ["📝 以下の内容で旅程を検索します", ""]
+        if self.departure:
+            lines.append(f"出発地: {self.departure}")
+        if self.destination:
+            lines.append(f"目的地: {self.destination}")
+        if self.schedule:
+            lines.append(f"日程: {self.schedule}")
+        if self.purpose:
+            lines.append(f"目的: {self.purpose}")
+        lines.append("")
+        lines.append("よろしいですか？ → 「OK」で検索開始 / 修正内容をテキストで入力")
         return "\n".join(lines)
 
 

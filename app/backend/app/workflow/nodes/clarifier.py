@@ -1,9 +1,7 @@
-"""RequestClarifier ノード — 入力情報の過不足を判定し、不足時に HITL で質問"""
+"""RequestClarifier ノード — 構造化出力で4項目を抽出し、ロジックで過不足を判定"""
 
 import asyncio
-import json
 import logging
-import re
 from typing import Any
 
 from agent_framework import Executor, WorkflowContext, handler, response_handler
@@ -14,55 +12,137 @@ from app.workflow.models import (
     ClarificationHITLRequest,
     ClarificationHITLResponse,
     ClarificationResult,
+    ExtractedRequest,
     RequestConfirmHITLRequest,
     RequestConfirmHITLResponse,
 )
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# 定数
+# ---------------------------------------------------------------------------
+_REQUIRED_FIELDS = ["departure", "destination", "schedule", "purpose"]
+_FIELD_LABELS = {
+    "departure": "出発地",
+    "destination": "目的地",
+    "schedule": "日程",
+    "purpose": "出張目的",
+}
 
+DEFAULT_DEPARTURE = "大阪"
+
+_EXTRACTION_PROMPT = """\
+ユーザーの出張リクエストから以下の4項目を抽出してください。
+入力に明示されていない項目は空文字にしてください。推測で補完しないでください。
+
+- departure: 出発地（都市名・駅名など）
+- destination: 目的地（都市名・施設名・エリア名など）
+- schedule: 日程（日付や期間をそのまま抽出）
+- purpose: 出張目的（会議、顧客訪問、研修など）
+"""
+
+
+# ---------------------------------------------------------------------------
+# LLM 構造化出力による情報抽出
+# ---------------------------------------------------------------------------
+def _extract_fields(user_input: str) -> ExtractedRequest:
+    """LLM の構造化出力でユーザー入力から4項目を抽出する"""
+    openai_client = get_openai_client()
+    try:
+        response = openai_client.beta.chat.completions.parse(
+            model=settings.azure_ai_model_deployment_name,
+            messages=[
+                {"role": "system", "content": _EXTRACTION_PROMPT},
+                {"role": "user", "content": user_input},
+            ],
+            response_format=ExtractedRequest,
+            temperature=0,
+        )
+        parsed = response.choices[0].message.parsed
+        if parsed is not None:
+            return parsed
+    except Exception as e:
+        logger.warning("Structured output parse failed, falling back: %s", e)
+
+    return ExtractedRequest()
+
+
+def _merge_fields(
+    new_fields: dict[str, str],
+    prev_fields: dict[str, str],
+) -> dict[str, str]:
+    """新しい抽出結果と前回の結果をマージ（新しい値を優先）"""
+    merged: dict[str, str] = {}
+    for key in _REQUIRED_FIELDS:
+        merged[key] = new_fields.get(key) or prev_fields.get(key) or ""
+    return merged
+
+
+def _check_completeness(
+    fields: dict[str, str],
+) -> tuple[bool, list[str], str]:
+    """必須フィールドが揃っているかロジックで判定"""
+    missing_labels = [
+        _FIELD_LABELS[key] for key in _REQUIRED_FIELDS if not fields.get(key)
+    ]
+    if missing_labels:
+        question = f"{'、'.join(missing_labels)}を教えてください。"
+        return False, missing_labels, question
+    return True, [], ""
+
+
+def _build_enriched_request(fields: dict[str, str]) -> str:
+    """TravelPlanner 向けのラベル付きリクエスト文を生成"""
+    lines = [
+        f"出発地: {fields['departure']}",
+        f"目的地: {fields['destination']}",
+        f"日程: {fields['schedule']}",
+        f"目的: {fields['purpose']}",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# ワークフローノード
+# ---------------------------------------------------------------------------
 class RequestClarifierStep(Executor):
-    """Step 0: RequestClarifier Foundry Agent で入力の過不足を判定"""
+    """Step 0: LLM 構造化出力で情報抽出 → ロジックで完全性チェック"""
 
     def __init__(self):
         super().__init__(id="request_clarifier")
 
-    def _call_clarifier(self, user_input: str) -> dict:
-        openai_client = get_openai_client()
-        conv = openai_client.conversations.create(
-            items=[{"type": "message", "role": "user", "content": user_input}],
-        )
-        response = openai_client.responses.create(
-            conversation=conv.id,
-            extra_body={
-                "agent_reference": {
-                    "name": settings.request_clarifier_agent,
-                    "type": "agent_reference",
-                }
-            },
-        )
-        text = response.output_text
-        try:
-            openai_client.conversations.delete(conversation_id=conv.id)
-        except Exception:
-            pass
-
-        m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-        raw = m.group(1) if m else text
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"complete": True, "enriched_request": user_input}
-
     @handler(input=str, output=ClarificationResult)
     async def run(self, user_input, ctx) -> None:
-        result = await asyncio.to_thread(self._call_clarifier, user_input)
+        extracted = await asyncio.to_thread(_extract_fields, user_input)
+
+        # 前回の抽出結果とマージ（追加入力・修正に対応）
+        prev_fields = ctx.get_state("request_fields") or {}
+        new_fields = extracted.model_dump()
+        fields = _merge_fields(new_fields, prev_fields)
+
+        # 出発地のデフォルト適用
+        departure_is_default = False
+        if not fields["departure"]:
+            fields["departure"] = DEFAULT_DEPARTURE
+            departure_is_default = True
+
+        ctx.set_state("request_fields", fields)
+        ctx.set_state("departure_is_default", departure_is_default)
         ctx.set_state("original_input", user_input)
+
+        complete, missing_labels, question = _check_completeness(fields)
+
+        logger.info(
+            "Extraction: fields=%s, complete=%s, missing=%s",
+            fields, complete, missing_labels,
+        )
+
         cr = ClarificationResult(
-            complete=result.get("complete", True),
-            enriched_request=result.get("enriched_request", user_input),
-            missing_fields=result.get("missing_fields", []),
-            question=result.get("question", ""),
+            complete=complete,
+            enriched_request=_build_enriched_request(fields) if complete else "",
+            missing_fields=missing_labels,
+            question=question,
         )
         await ctx.send_message(cr)
 
@@ -95,6 +175,7 @@ class UserClarificationStep(Executor):
         ctx: WorkflowContext,
     ) -> None:
         round_num = ctx.get_state("clarification_round", 1)
+        # 元の入力 + 追加回答を結合して再抽出
         updated = f"{original.original_input}\n{response.answer}"
         ctx.set_state("original_input", updated)
         if round_num >= 3:
@@ -111,9 +192,20 @@ class ClarificationToRequestStep(Executor):
 
     @handler(input=ClarificationResult, output=str)
     async def run(self, result, ctx) -> None:
+        fields = ctx.get_state("request_fields", {}) or {}
+        departure_is_default = ctx.get_state("departure_is_default", False)
+
+        departure_display = fields.get("departure", "")
+        if departure_is_default:
+            departure_display += "（既定値）"
+
         await ctx.request_info(
             request_data=RequestConfirmHITLRequest(
                 enriched_request=result.enriched_request,
+                departure=departure_display,
+                destination=fields.get("destination", ""),
+                schedule=fields.get("schedule", ""),
+                purpose=fields.get("purpose", ""),
             ),
             response_type=RequestConfirmHITLResponse,
         )
