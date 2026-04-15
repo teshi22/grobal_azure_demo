@@ -163,29 +163,82 @@ export function PlanConfirmCard({ data, disabled, onConfirm, onRevise }: Props) 
         </div>
       )}
 
-      <div className="mt-4 space-y-1 rounded-lg bg-gray-50 px-4 py-3 text-sm">
-        <div className="flex justify-between">
-          <span className="font-medium">🚄 交通費計</span>
-          <span>
-            ¥{((plan.transportation_cost as number) || 0).toLocaleString()}
-          </span>
-        </div>
-        {tripType === "宿泊" && (
-          <div className="flex justify-between">
-            <span className="font-medium">🏨 宿泊費計</span>
-            <span>
-              ¥{(
-                ((plan.hotel_cost_per_night as number) || 0) *
-                ((plan.hotel_nights as number) || 1)
-              ).toLocaleString()}
-            </span>
-          </div>
-        )}
-        <div className="flex justify-between border-t pt-1 font-semibold">
-          <span>💰 合計</span>
-          <span>¥{((plan.total_cost as number) || 0).toLocaleString()}</span>
-        </div>
+      {/* 💼 日当 */}
+      <div className="mt-3">
+        <p className="mb-1 text-xs font-semibold text-gray-500">💼 日当</p>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-xs text-gray-500">
+              <th className="py-1 pr-2 font-medium">種別</th>
+              <th className="py-1 pr-2 text-right font-medium">日額</th>
+              <th className="py-1 pr-2 text-right font-medium">日数</th>
+              <th className="py-1 text-right font-medium">金額</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-b border-gray-100">
+              <td className="py-1 pr-2">{tripType === "宿泊" ? "宿泊出張" : "日帰り出張"}</td>
+              <td className="py-1 pr-2 text-right whitespace-nowrap">
+                ¥{(tripType === "宿泊" ? 5000 : 3000).toLocaleString()}
+              </td>
+              <td className="py-1 pr-2 text-right">
+                {tripType === "宿泊" ? ((plan.hotel_nights as number) || 1) + 1 : 1}日
+              </td>
+              <td className="py-1 text-right whitespace-nowrap">
+                ¥{(tripType === "宿泊"
+                  ? 5000 * (((plan.hotel_nights as number) || 1) + 1)
+                  : 3000
+                ).toLocaleString()}
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr className="text-xs font-medium text-gray-600">
+              <td colSpan={3} className="pt-1 text-right pr-2">小計</td>
+              <td className="pt-1 text-right whitespace-nowrap">
+                ¥{(tripType === "宿泊"
+                  ? 5000 * (((plan.hotel_nights as number) || 1) + 1)
+                  : 3000
+                ).toLocaleString()}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
+
+      {/* サマリー */}
+      {(() => {
+        const transportCost = (plan.transportation_cost as number) || 0;
+        const hotelTotal = tripType === "宿泊"
+          ? ((plan.hotel_cost_per_night as number) || 0) * ((plan.hotel_nights as number) || 1)
+          : 0;
+        const dailyAllowance = tripType === "宿泊"
+          ? 5000 * (((plan.hotel_nights as number) || 1) + 1)
+          : 3000;
+        const grandTotal = transportCost + hotelTotal + dailyAllowance;
+        return (
+          <div className="mt-4 space-y-1 rounded-lg bg-gray-50 px-4 py-3 text-sm">
+            <div className="flex justify-between">
+              <span className="font-medium">🚄 交通費計</span>
+              <span>¥{transportCost.toLocaleString()}</span>
+            </div>
+            {tripType === "宿泊" && (
+              <div className="flex justify-between">
+                <span className="font-medium">🏨 宿泊費計</span>
+                <span>¥{hotelTotal.toLocaleString()}</span>
+              </div>
+            )}
+            <div className="flex justify-between">
+              <span className="font-medium">💼 日当計</span>
+              <span>¥{dailyAllowance.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between border-t pt-1 font-semibold">
+              <span>💰 合計</span>
+              <span>¥{grandTotal.toLocaleString()}</span>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="mt-4 flex gap-3">
         <button
