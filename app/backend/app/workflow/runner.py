@@ -16,8 +16,10 @@ from app.services.cosmos import (
     get_conversation_store,
     get_event_store,
 )
+from app.services.mcp_client import call_submit_tool
 from app.workflow.builder import create_workflow_builder
 from app.workflow.models import ClarificationHITLRequest, PlanReviewRequest
+from app.workflow.policy import evaluate_policy
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,99 @@ def _format_plan_complete(plan_text: str) -> str:
         return "\n".join(lines)
     except (json.JSONDecodeError, TypeError):
         return f"✅ 出張申請プラン確定\n\n{plan_text}"
+
+
+async def _run_policy_check_and_complete(
+    plan_text: str,
+    conversation_id: str,
+    event_store,
+    conv_store,
+) -> None:
+    """プラン承認後: 旅費規程チェック → MCP 申請送信 → 完了"""
+
+    # --- 1. 旅費規程チェック ---
+    await event_store.append(
+        conversation_id=conversation_id,
+        event_type="status",
+        data=json.dumps(
+            {"step": "policy_check", "label": "旅費規程チェック中..."},
+            ensure_ascii=False,
+        ),
+    )
+
+    try:
+        plan = json.loads(plan_text)
+    except (json.JSONDecodeError, TypeError):
+        plan = {}
+
+    policy_result = evaluate_policy({
+        "hotel_cost_per_night": plan.get("hotel_cost_per_night", 0),
+        "transportation": " ".join(
+            leg.get("method", "") for leg in plan.get("transportation_legs", [])
+        ),
+        "distance_km": plan.get("distance_km", 0),
+        "travel_time_hours": plan.get("travel_time_hours", 0),
+        "needs_pre_night_stay": plan.get("needs_pre_night_stay", False),
+    })
+
+    compliant = policy_result["compliant"]
+    details = policy_result["details"]
+    policy_text_display = "\n".join(f"  {d}" for d in details)
+
+    # 規程チェック結果を SSE で送出
+    await event_store.append(
+        conversation_id=conversation_id,
+        event_type="agent_response",
+        data=json.dumps(
+            {"content": f"📋 旅費規程チェック結果\n\n{policy_text_display}"},
+            ensure_ascii=False,
+        ),
+    )
+
+    if not compliant:
+        # 不適合 → 差し戻し
+        output = (
+            f"❌ 旅費規程チェック: 不適合\n\n{policy_text_display}"
+            f"\n\nプランを修正して再申請してください。"
+        )
+        await event_store.append(
+            conversation_id=conversation_id,
+            event_type="complete",
+            data=json.dumps({"output": output}, ensure_ascii=False),
+        )
+        await conv_store.update_status(conversation_id, "completed")
+        return
+
+    # --- 2. MCP 申請送信 ---
+    await event_store.append(
+        conversation_id=conversation_id,
+        event_type="status",
+        data=json.dumps(
+            {"step": "submit", "label": "出張申請を送信中..."},
+            ensure_ascii=False,
+        ),
+    )
+
+    submit_result = await call_submit_tool({"application_text": plan_text})
+
+    # --- 3. 完了メッセージ ---
+    output = _format_plan_complete(plan_text)
+    output += f"\n\n📋 規程チェック: 適合 ✅\n{policy_text_display}"
+
+    status = submit_result.get("status")
+    if status == "submitted":
+        output += "\n\n📤 出張申請を申請システムへ送信しました！"
+    elif status == "skipped":
+        output += "\n\n⚠️ 申請システム未設定のため送信はスキップされました。"
+    else:
+        output += f"\n\n❌ 申請送信に失敗: {submit_result.get('message', '不明')}"
+
+    await event_store.append(
+        conversation_id=conversation_id,
+        event_type="complete",
+        data=json.dumps({"output": output}, ensure_ascii=False),
+    )
+    await conv_store.update_status(conversation_id, "completed")
 
 
 def _hitl_request_to_event(request_data) -> dict | None:
@@ -189,18 +284,14 @@ async def resume_workflow_async(
         original_input = conv.get("original_input", "") if conv else ""
         plan_text = conv.get("plan_text", "") if conv else ""
 
-        # プラン確認で承認 → 完了
+        # プラン確認で承認 → 規約チェック → 申請送信
         is_approved = user_input.strip().lower() in (
             "ok", "yes", "y", "はい", "確定", "進めて", "大丈夫",
         )
         if hitl_step == "plan_review" and is_approved and plan_text:
-            output = _format_plan_complete(plan_text)
-            await event_store.append(
-                conversation_id=conversation_id,
-                event_type="complete",
-                data=json.dumps({"output": output}, ensure_ascii=False),
+            await _run_policy_check_and_complete(
+                plan_text, conversation_id, event_store, conv_store,
             )
-            await conv_store.update_status(conversation_id, "completed")
             return
 
         # それ以外 → ワークフロー再実行
