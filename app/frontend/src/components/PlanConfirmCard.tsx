@@ -13,10 +13,71 @@ interface TransportLeg {
   cost: number;
 }
 
+function splitLegs(legs: TransportLeg[]): {
+  outbound: TransportLeg[];
+  returnTrip: TransportLeg[];
+} {
+  if (legs.length < 2) return { outbound: legs, returnTrip: [] };
+  const mid = Math.ceil(legs.length / 2);
+  return { outbound: legs.slice(0, mid), returnTrip: legs.slice(mid) };
+}
+
+function LegTable({
+  label,
+  legs,
+  startIndex,
+}: {
+  label: string;
+  legs: TransportLeg[];
+  startIndex: number;
+}) {
+  const subtotal = legs.reduce((s, l) => s + (l.cost ?? 0), 0);
+  return (
+    <div>
+      <p className="mb-1 text-xs font-semibold text-gray-500">{label}</p>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b text-left text-xs text-gray-500">
+            <th className="py-1 pr-2 font-medium">#</th>
+            <th className="py-1 pr-2 font-medium">交通手段</th>
+            <th className="py-1 pr-2 font-medium">区間</th>
+            <th className="py-1 text-right font-medium">金額</th>
+          </tr>
+        </thead>
+        <tbody>
+          {legs.map((leg, i) => (
+            <tr key={i} className="border-b border-gray-100">
+              <td className="py-1 pr-2 text-gray-400">{startIndex + i + 1}</td>
+              <td className="py-1 pr-2">{leg.method}</td>
+              <td className="py-1 pr-2 whitespace-nowrap">
+                {leg.from} → {leg.to}
+              </td>
+              <td className="py-1 text-right whitespace-nowrap">
+                ¥{leg.cost?.toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="text-xs font-medium text-gray-600">
+            <td colSpan={3} className="pt-1 text-right pr-2">
+              小計
+            </td>
+            <td className="pt-1 text-right whitespace-nowrap">
+              ¥{subtotal.toLocaleString()}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
   const plan = data as Record<string, unknown>;
   const legs = (plan.transportation_legs as TransportLeg[]) || [];
   const tripType = (plan.trip_type as string) || "宿泊";
+  const { outbound, returnTrip } = splitLegs(legs);
 
   const handleRevise = () => {
     const feedback = prompt("変更要望を入力してください:");
@@ -27,43 +88,51 @@ export function PlanConfirmCard({ data, onConfirm, onRevise }: Props) {
     <div className="rounded-xl border bg-white p-5 shadow-sm">
       <h3 className="mb-3 text-base font-semibold">📋 旅程プラン確認</h3>
 
-      <div className="space-y-2 text-sm">
-        <p>
+      <div className="mb-3 flex items-center gap-4 text-sm">
+        <span>
           <span className="font-medium">種別:</span> {tripType}
-        </p>
+        </span>
+        {typeof plan.schedule === "string" && (
+          <span>
+            <span className="font-medium">日程:</span> {plan.schedule}
+          </span>
+        )}
+      </div>
 
-        {legs.length > 0 && (
-          <div>
-            <span className="font-medium">🚄 交通手段:</span>
-            <ul className="ml-4 mt-1 list-disc">
-              {legs.map((leg, i) => (
-                <li key={i}>
-                  {leg.method} — {leg.from} → {leg.to} ¥
-                  {leg.cost?.toLocaleString()}
-                </li>
-              ))}
-            </ul>
+      {legs.length > 0 && (
+        <div className="space-y-3">
+          <LegTable label="🛫 往路" legs={outbound} startIndex={0} />
+          {returnTrip.length > 0 && (
+            <LegTable
+              label="🛬 復路"
+              legs={returnTrip}
+              startIndex={outbound.length}
+            />
+          )}
+        </div>
+      )}
+
+      <div className="mt-4 space-y-1 rounded-lg bg-gray-50 px-4 py-3 text-sm">
+        <div className="flex justify-between">
+          <span className="font-medium">🚄 交通費計</span>
+          <span>
+            ¥{((plan.transportation_cost as number) || 0).toLocaleString()}
+          </span>
+        </div>
+        {tripType === "宿泊" && (
+          <div className="flex justify-between">
+            <span className="font-medium">🏨 宿泊</span>
+            <span>
+              {(plan.hotel as string) || "—"} ¥
+              {((plan.hotel_cost_per_night as number) || 0).toLocaleString()}
+              /泊 × {(plan.hotel_nights as number) || 1}泊
+            </span>
           </div>
         )}
-
-        <p>
-          <span className="font-medium">💴 交通費計:</span> ¥
-          {((plan.transportation_cost as number) || 0).toLocaleString()}
-        </p>
-
-        {tripType === "宿泊" && (
-          <p>
-            <span className="font-medium">🏨 宿泊:</span>{" "}
-            {(plan.hotel as string) || "—"} ¥
-            {((plan.hotel_cost_per_night as number) || 0).toLocaleString()}
-            /泊 × {(plan.hotel_nights as number) || 1}泊
-          </p>
-        )}
-
-        <p>
-          <span className="font-medium">💰 合計:</span> ¥
-          {((plan.total_cost as number) || 0).toLocaleString()}
-        </p>
+        <div className="flex justify-between border-t pt-1 font-semibold">
+          <span>💰 合計</span>
+          <span>¥{((plan.total_cost as number) || 0).toLocaleString()}</span>
+        </div>
       </div>
 
       <div className="mt-4 flex gap-3">
