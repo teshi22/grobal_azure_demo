@@ -25,9 +25,11 @@ class Settings(BaseSettings):
     cosmos_checkpoint_container: str = "workflow-checkpoints"
     cosmos_event_container: str = "conversation-events"
     cosmos_conversation_container: str = "conversations"
+    cosmos_travel_request_container: str = "travel-requests"
 
     # MCP ツール
     mcp_tool_endpoint: str = ""
+    mcp_function_app_client_id: str = ""
 
     # Application Insights
     applicationinsights_connection_string: str = ""

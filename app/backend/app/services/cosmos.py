@@ -249,6 +249,48 @@ def get_event_store() -> EventStore:
 
 
 # ---------------------------------------------------------------------------
+# TravelRequestStore — 出張申請データの読み取り
+# ---------------------------------------------------------------------------
+class TravelRequestStore:
+    """MCP サーバーが書き込んだ出張申請データを読み取る"""
+
+    def __init__(self):
+        self._container = _get_container(settings.cosmos_travel_request_container)
+
+    async def list_all(self, limit: int = 50) -> list[dict]:
+        """全申請を新しい順に取得"""
+        query = (
+            "SELECT * FROM c ORDER BY c.submitted_at DESC OFFSET 0 LIMIT @limit"
+        )
+        params: list[dict] = [{"name": "@limit", "value": limit}]
+        items: list[dict] = []
+        async for item in self._container.query_items(
+            query, parameters=params,
+        ):
+            items.append(item)
+        return items
+
+    async def get(self, request_id: str) -> dict | None:
+        """request_id で申請を取得 (point read)"""
+        try:
+            return await self._container.read_item(
+                request_id, partition_key=request_id,
+            )
+        except Exception:
+            return None
+
+
+_travel_request_store: TravelRequestStore | None = None
+
+
+def get_travel_request_store() -> TravelRequestStore:
+    global _travel_request_store
+    if _travel_request_store is None:
+        _travel_request_store = TravelRequestStore()
+    return _travel_request_store
+
+
+# ---------------------------------------------------------------------------
 # CosmosCheckpointRepository (Agent Framework インターフェース実装)
 # ---------------------------------------------------------------------------
 class CosmosCheckpointRepository:
@@ -311,7 +353,7 @@ class CosmosCheckpointRepository:
         items = [
             item
             async for item in self._container.query_items(
-                query, parameters=params, enable_cross_partition_query=True
+                query, parameters=params,
             )
         ]
         return [self._doc_to_checkpoint(i) for i in items]
@@ -326,7 +368,7 @@ class CosmosCheckpointRepository:
         return [
             item["id"]
             async for item in self._container.query_items(
-                query, parameters=params, enable_cross_partition_query=True
+                query, parameters=params,
             )
         ]
 

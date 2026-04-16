@@ -179,7 +179,49 @@ async def _run_policy_check_and_complete(
         await conv_store.update_status(conversation_id, "completed")
         return
 
-    # --- 2. MCP 申請送信 ---
+    # --- 2. 申請確認 HITL ---
+    try:
+        plan_data = json.loads(plan_text)
+    except (json.JSONDecodeError, TypeError):
+        plan_data = {}
+
+    hitl_data = {
+        "type": "submit_confirmation",
+        "message": "旅費規程チェックに適合しました。申請を送信しますか？",
+        "data": {
+            "policy_result": policy_text_display,
+            "plan_summary": _format_plan_complete(plan_text),
+            **plan_data,
+        },
+    }
+    await event_store.append(
+        conversation_id=conversation_id,
+        event_type="hitl_request",
+        data=json.dumps(hitl_data, ensure_ascii=False),
+    )
+
+    # 次の resume 用コンテキスト保存
+    conv = await conv_store.get(conversation_id)
+    if conv:
+        conv["hitl_step"] = "submit_confirmation"
+        conv["plan_text"] = plan_text
+        conv["policy_display"] = policy_text_display
+        conv["status"] = "waiting_for_input"
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await conv_store._container.upsert_item(conv)
+    else:
+        await conv_store.update_status(conversation_id, "waiting_for_input")
+
+
+async def _run_submit_and_complete(
+    plan_text: str,
+    policy_display: str,
+    conversation_id: str,
+    event_store,
+    conv_store,
+) -> None:
+    """申請確認後: MCP 申請送信 → 完了"""
+
     await event_store.append(
         conversation_id=conversation_id,
         event_type="status",
@@ -189,11 +231,13 @@ async def _run_policy_check_and_complete(
         ),
     )
 
-    submit_result = await call_submit_tool({"application_text": plan_text})
+    submit_result = await call_submit_tool(
+        {"application_text": plan_text},
+        conversation_id=conversation_id,
+    )
 
-    # --- 3. 完了メッセージ ---
     output = _format_plan_complete(plan_text)
-    output += f"\n\n📋 規程チェック: 適合 ✅\n{policy_text_display}"
+    output += f"\n\n📋 規程チェック: 適合 ✅\n{policy_display}"
 
     status = submit_result.get("status")
     if status == "submitted":
@@ -480,10 +524,18 @@ async def resume_workflow_async(
             )
             return
 
-        # プラン確認で承認 → 規約チェック → 申請送信
+        # プラン確認で承認 → 規約チェック → 申請確認
         if hitl_step == "plan_review" and is_approved and plan_text:
             await _run_policy_check_and_complete(
                 plan_text, conversation_id, event_store, conv_store,
+            )
+            return
+
+        # 申請確認で承認 → MCP 申請送信
+        if hitl_step == "submit_confirmation" and is_approved and plan_text:
+            policy_display = conv.get("policy_display", "") if conv else ""
+            await _run_submit_and_complete(
+                plan_text, policy_display, conversation_id, event_store, conv_store,
             )
             return
 

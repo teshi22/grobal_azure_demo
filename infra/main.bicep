@@ -33,6 +33,9 @@ param modelSkuName string = 'GlobalStandard'
 @description('モデルキャパシティ (TPM)')
 param modelCapacity int = 30
 
+@description('MCP Functions 用 Entra ID アプリ登録のクライアント ID')
+param mcpEntraClientId string = ''
+
 // ユニークサフィックス生成
 param deploymentTimestamp string = utcNow('yyyyMMddHHmmss')
 var uniqueSuffix = substring(uniqueString('${resourceGroup().id}-${deploymentTimestamp}'), 0, 4)
@@ -130,6 +133,7 @@ module containerApps 'modules/container-apps.bicep' = {
     cosmosEndpoint: cosmosDb.outputs.accountEndpoint
     aiProjectEndpoint: '${aiAccount.outputs.endpoint}api/projects/${projectName}'
     mcpToolEndpoint: functions.outputs.mcpEndpoint
+    mcpFunctionAppClientId: mcpEntraClientId
     appInsightsConnectionString: appInsights.outputs.connectionString
   }
 }
@@ -164,6 +168,19 @@ module functions 'modules/functions.bicep' = {
     storageAccountName: funcStorageName
     location: location
     appInsightsConnectionString: appInsights.outputs.connectionString
+    cosmosEndpoint: cosmosDb.outputs.accountEndpoint
+    mcpEntraClientId: mcpEntraClientId
+  }
+}
+
+// Cosmos DB RBAC: Functions の Managed Identity にデータ投稿者ロールを付与
+resource funcCosmosRbac 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
+  parent: cosmosAccountRef
+  name: guid(cosmosAccountRef.id, functionAppName, 'cosmos-data-contributor')
+  properties: {
+    roleDefinitionId: '${cosmosAccountRef.id}/sqlRoleDefinitions/${cosmosDataContributorRoleId}'
+    principalId: functions.outputs.principalId
+    scope: cosmosAccountRef.id
   }
 }
 
@@ -181,3 +198,5 @@ output acrLoginServer string = acr.outputs.acrLoginServer
 output cosmosEndpoint string = cosmosDb.outputs.accountEndpoint
 output appUrl string = 'https://${containerApps.outputs.appFqdn}'
 output mcpEndpoint string = functions.outputs.mcpEndpoint
+output functionAppName string = functions.outputs.functionAppName
+output funcStorageAccountName string = functions.outputs.storageAccountName

@@ -4,10 +4,10 @@
 # Foundry Agent の作成・削除・一覧表示 + ホステッドエージェントデプロイ
 #
 # 使い方:
-#   python src/build_agents.py            # サブエージェント作成
-#   python src/build_agents.py --delete   # サブエージェント削除
-#   python src/build_agents.py --list     # エージェント一覧
-#   python src/build_agents.py --deploy   # ホステッドエージェントをデプロイ
+#   python scripts/build_agents.py            # サブエージェント作成
+#   python scripts/build_agents.py --delete   # サブエージェント削除
+#   python scripts/build_agents.py --list     # エージェント一覧
+#   python scripts/build_agents.py --deploy   # ホステッドエージェントをデプロイ
 # =============================================================================
 
 import argparse
@@ -217,10 +217,13 @@ check_travel_policy ツールを使って判定を行ってください。
     {
         "name": "ApprovalAgent",
         "env_key": "APPROVAL_AGENT",
-        "description": "出張申請書作成エージェント",
-        "instructions": """あなたは出張申請書を作成する専門エージェントです。
+        "description": "出張申請書作成・送信エージェント",
+        "instructions": """あなたは出張申請書を作成し、申請システムへ送信する専門エージェントです。
 
-旅程情報と規程チェック結果を受け取り、以下の形式で出張申請書を作成してください:
+旅程情報と規程チェック結果を受け取り、以下の手順で処理してください:
+
+## 手順 1: 申請書を作成
+以下の形式で出張申請書を作成してください:
 
 ===== 出張申請書 =====
 ■ 申請者: （ユーザー情報から）
@@ -241,9 +244,33 @@ check_travel_policy ツールを使って判定を行ってください。
   - 合計:   ¥XX,XXX
 ========================
 
-最後に「✅ 申請書の作成が完了しました。申請システムへの送信確認をお願いします。」と表示してください。
+## 手順 2: 申請システムへ送信
+申請書の作成後、必ず submit_travel_request ツールを呼び出して申請を送信してください。
+ツールには旅程プランのJSON部分をそのまま application_text として渡してください。
+
+## 手順 3: 結果を報告
+ツールの結果に応じて以下を表示:
+- 成功時: 「✅ 出張申請書の作成が完了し、申請システムへ送信しました！（申請番号: TR-XXXXXXXX）」
+- 失敗時: 「❌ 申請の送信に失敗しました。」とエラー内容
 """,
-        "tools_factory": lambda: [],
+        "tools_factory": lambda: [
+            FunctionTool(
+                name="submit_travel_request",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "application_text": {
+                            "type": "string",
+                            "description": "出張プランのJSONデータ文字列",
+                        },
+                    },
+                    "required": ["application_text"],
+                    "additionalProperties": False,
+                },
+                description="出張申請を申請システムに送信する",
+                strict=False,
+            ),
+        ],
     },
 ]
 

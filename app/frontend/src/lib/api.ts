@@ -1,5 +1,7 @@
 /** API クライアント */
 
+import type { TravelRequest } from "./types";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 export interface Conversation {
@@ -54,4 +56,20 @@ export function createEventSource(
   const url = `${API_BASE}/conversations/${conversationId}/stream`;
   const es = new EventSource(url);
   return es;
+}
+
+export async function fetchTravelRequests(): Promise<TravelRequest[]> {
+  const res = await fetch(`${API_BASE}/travel-requests`);
+  if (!res.ok)
+    throw new Error(`Failed to fetch travel requests: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTravelRequest(
+  requestId: string,
+): Promise<TravelRequest> {
+  const res = await fetch(`${API_BASE}/travel-requests/${requestId}`);
+  if (!res.ok)
+    throw new Error(`Failed to fetch travel request: ${res.status}`);
+  return res.json();
 }

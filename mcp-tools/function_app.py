@@ -9,7 +9,7 @@ import logging
 import azure.functions as func
 from tools.submit_travel_request import submit_travel_request
 
-app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
+app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,10 @@ MCP_TOOLS = [
                 "application_text": {
                     "type": "string",
                     "description": "出張申請書のテキスト",
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "会話 ID（べき等性キー）",
                 },
             },
             "required": ["application_text"],

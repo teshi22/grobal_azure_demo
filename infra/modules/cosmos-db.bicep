@@ -32,6 +32,10 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
         failoverPriority: 0
       }
     ]
+    publicNetworkAccess: 'Enabled'
+    ipRules: [
+      { ipAddressOrRange: '0.0.0.0' } // Azure サービスからのアクセスを許可 (Functions等)
+    ]
   }
 }
 
@@ -98,6 +102,32 @@ resource conversationContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabas
       partitionKey: {
         paths: ['/user_id']
         kind: 'Hash'
+      }
+    }
+  }
+}
+
+// コンテナ: travel-requests (MCP サーバーが書き込み、バックエンドが読み取り)
+resource travelRequestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: database
+  name: 'travel-requests'
+  properties: {
+    resource: {
+      id: 'travel-requests'
+      partitionKey: {
+        paths: ['/request_id']
+        kind: 'Hash'
+      }
+      indexingPolicy: {
+        includedPaths: [
+          { path: '/submitted_at/?' }
+          { path: '/status/?' }
+        ]
+        excludedPaths: [
+          { path: '/application_text/*' }
+          { path: '/transportation_legs/*' }
+          { path: '/*' }
+        ]
       }
     }
   }

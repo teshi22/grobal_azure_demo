@@ -1,16 +1,27 @@
-.playwright-mcp/
+# Python
 __pycache__/
 *.pyc
-.env
 .venv/
+
+# Environment
+.env
+
+# Playwright MCP screenshots
+.playwright-mcp/
+
+# Agent Framework checkpoints (local)
 checkpoints/
 checkpoints_test/
 checkpoints_bench/
 
-# App (Frontend + Backend)
+# Bicep compiled ARM template
+infra/main.json
+
+# App — Frontend
 app/frontend/node_modules/
 app/frontend/.next/
 app/frontend/out/
+app/frontend/tsconfig.tsbuildinfo
 app/backend/.venv/
 
 # MCP Tools

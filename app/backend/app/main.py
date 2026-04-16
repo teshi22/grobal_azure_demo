@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import conversations, stream
+from app.routers import conversations, stream, travel_requests
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,7 @@ if settings.cors_origins:
 # API ルート
 app.include_router(conversations.router, prefix="/api")
 app.include_router(stream.router, prefix="/api")
+app.include_router(travel_requests.router, prefix="/api")
 
 
 @app.get("/health")

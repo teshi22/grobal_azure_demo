@@ -21,10 +21,10 @@ def evaluate_policy(args: dict) -> dict:
     results: list[str] = []
     ok = True
 
-    hotel = args.get("hotel_cost_per_night", 0)
-    transport = args.get("transportation", "")
-    distance = args.get("distance_km", 0)
-    travel_time = args.get("travel_time_hours", 0)
+    hotel = args.get("hotel_cost_per_night") or 0
+    transport = args.get("transportation") or ""
+    distance = args.get("distance_km") or 0
+    travel_time = args.get("travel_time_hours") or 0
 
     limit = 12000
     if hotel > limit:

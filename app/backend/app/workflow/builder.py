@@ -3,6 +3,7 @@
 from agent_framework import WorkflowBuilder
 
 from app.config import settings
+from app.services.mcp_client import call_submit_tool_sync
 from app.workflow.nodes.clarifier import (
     ClarificationDirectStep,
     ClarificationToRequestStep,
@@ -13,11 +14,9 @@ from app.workflow.nodes.clarifier import (
 )
 from app.workflow.nodes.foundry_base import FoundryAgentNode
 from app.workflow.nodes.plan_review import PlanReviewStep
-from app.workflow.nodes.submit import SubmitTravelRequestStep
 from app.workflow.nodes.travel_planner import (
     HandleRejectionStep,
     MessageToStrStep,
-    OutputResultStep,
     PolicyRouterStep,
     ToApprovalInputStep,
     ToPolicyInputStep,
@@ -51,7 +50,7 @@ def create_workflow_builder() -> WorkflowBuilder:
                                                ↓                ↓
                                           ToApproval     HandleRejection
                                                ↓
-                                          ApprovalAgent → SubmitTravelRequest
+                                          ApprovalAgent (MCP で申請送信)
     """
     # ノードインスタンス
     message_to_str = MessageToStrStep()
@@ -75,10 +74,12 @@ def create_workflow_builder() -> WorkflowBuilder:
     to_approval_input = ToApprovalInputStep()
 
     approval_agent = FoundryAgentNode(
-        id="approval_agent", agent_name=settings.approval_agent
+        id="approval_agent",
+        agent_name=settings.approval_agent,
+        function_handler=call_submit_tool_sync,
+        is_terminal=True,
     )
 
-    submit_step = SubmitTravelRequestStep()
     handle_rejection = HandleRejectionStep()
 
     # グラフ構築
@@ -109,9 +110,8 @@ def create_workflow_builder() -> WorkflowBuilder:
         .add_edge(policy_checker, policy_router)
         .add_edge(policy_router, to_approval_input, condition=is_compliant)
         .add_edge(policy_router, handle_rejection, condition=is_not_compliant)
-        # Step 3: ApprovalAgent → MCP 送信
+        # Step 3: ApprovalAgent (MCP 連携で申請送信)
         .add_edge(to_approval_input, approval_agent)
-        .add_edge(approval_agent, submit_step)
     )
 
     return builder

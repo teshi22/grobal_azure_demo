@@ -1,50 +1,85 @@
-# Microsoft Foundryで構築するAIエージェント開発最前線 — デモシナリオ
+# AI 出張申請エージェント — Microsoft Foundry Demo
 
-## デモ概要
-
-**シナリオ: AI 出張申請エージェント**
-
-社員が「6/12 北海道大学」のように自然言語で伝えるだけで、情報の確認・補完から交通手段・宿泊の検索、社内規程チェック、申請書作成・送信までを一気通貫で処理するワークフロー型マルチエージェントシステムです。
-
-### なぜこのシナリオか
-
-| 観点 | 説明 |
-|------|------|
-| **誰でもわかる** | 出張申請は多くの企業に共通する業務。聴衆全員がイメージしやすい |
-| **マルチエージェントの必然性** | 情報確認・検索・規程チェック・申請書作成と異なる専門性が必要で、役割分担が自然 |
-| **Foundry の機能を網羅** | Agent Framework・Structured Output・Human-in-the-Loop をコンパクトに紹介 |
-| **デモがシンプル** | 入力 → 確認 → 検索 → チェック → 申請の流れが明快で、短時間でデモ可能 |
+社員が「6/12 北海道大学」のように自然言語で伝えるだけで、情報の確認・補完から交通手段・宿泊の検索、社内規程チェック、申請書作成・送信までを一気通貫で処理するワークフロー型マルチエージェント Web アプリケーションです。
 
 ---
 
-## 実装バージョン
+## 技術スタック
 
-| ファイル | 説明 | 使用ライブラリ |
-|---------|------|---------------|
-| `src/workflow.py` | **対話型 CLI 版** | `agent-framework>=1.0.0` |
-| `src/hosted.py` | **ホステッドエージェント版** | `azure-ai-agentserver-agentframework` |
-| `src/build_agents.py` | Foundry Agent ビルドスクリプト | `azure-ai-projects==2.0.1` |
+```mermaid
+flowchart LR
+    User["👤 ユーザー"]
 
-### Agent Framework 版の特徴
+    subgraph CAE["Container Apps Environment"]
+        subgraph App["Container App"]
+            FE["<b>Frontend</b><br/>Next.js 15 · React 19<br/>TypeScript · Tailwind CSS 4"]
+            BE["<b>Backend API</b><br/>FastAPI · Python<br/>Agent Framework"]
+        end
+    end
 
-- **グラフベースのワークフロー**: `WorkflowBuilder` による宣言的なエージェント接続
-- **対話ループ**: 情報不足時の確認ループ、プラン変更要望による再検索ループ
-- **条件分岐エッジ**: 旅費規程チェック結果で自動ルーティング（OK → 申請書作成 / NG → 差し戻し）
-- **構造化出力**: Pydantic モデルで型安全なエージェント間データ受け渡し
-- **AI + 決定論ロジックの混在**: Travel Planner（AI）→ Policy Checker（ルールエンジン）→ Approval（AI）
+    subgraph Foundry["Azure AI Foundry"]
+        subgraph Proj["Foundry Project"]
+            Model["<b>GPT-5.4</b><br/>GlobalStandard"]
+            AgentTP["Travel Planner<br/>Agent"]
+            AgentPC["Policy Checker<br/>Agent"]
+            AgentAA["Approval<br/>Agent"]
+        end
+        BingConn["Bing Search<br/>Connection"]
+    end
+
+    subgraph Func["Azure Functions"]
+        MCP["<b>MCP Server</b><br/>submit_travel_request"]
+    end
+
+    Cosmos[("Cosmos DB<br/>会話 · チェックポイント<br/>· イベント")]
+    ACR["Container<br/>Registry"]
+    AppIns["Application Insights"]
+
+    User -->|HTTPS| FE
+    FE -->|"REST · SSE (HITL)"| BE
+    BE -->|Azure AI SDK| Proj
+    AgentTP & AgentPC & AgentAA -.->|推論| Model
+    AgentAA -->|MCP Protocol| MCP
+    MCP -->|azure-cosmos SDK| Cosmos
+    BE -->|azure-cosmos SDK| Cosmos
+    Proj -.->|Grounding| BingConn
+    BE -.->|OpenTelemetry| AppIns
+    ACR -.->|Image Pull| App
+
+    classDef boundary fill:none,stroke:#0078D4,stroke-width:2px,color:#0078D4
+    classDef resource fill:#E8F4FD,stroke:#0078D4,stroke-width:1px,color:#1A1A1A
+    classDef data fill:#E8F4FD,stroke:#0078D4,stroke-width:1px,color:#1A1A1A
+    classDef user fill:#FFF3E0,stroke:#F57C00,stroke-width:2px,color:#1A1A1A
+
+    class CAE,Foundry,Func boundary
+    class Proj boundary
+    class FE,BE,Model,AgentTP,AgentPC,AgentAA,MCP,BingConn,ACR,AppIns resource
+    class Cosmos data
+    class User user
+```
+
+| レイヤー | 技術 | 備考 |
+|---|---|---|
+| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS 4 | 静的エクスポート → FastAPI で配信 |
+| Backend | FastAPI, Python, Agent Framework | SSE でリアルタイム HITL |
+| AI Agent | Azure AI Foundry, GPT-5.4 | 3 Foundry Agent によるワークフロー |
+| MCP Tools | Azure Functions, MCP Protocol (JSON-RPC) | 申請登録ツール |
+| Data | Cosmos DB | パーティション: `user_id` / `conversation_id` |
+| Observability | Application Insights, OpenTelemetry | FastAPI 計装 |
+| Infra | Container Apps, Container Registry, Bicep (IaC) | Managed Identity + RBAC |
 
 ---
 
 ## エージェント構成
 
-**4 つの専門エージェント + カスタム Executor** によるワークフロー構成です。
+**3 つの Foundry Agent + カスタム Executor ノード** によるワークフロー構成です。
 
 | # | ノード名 | 種別 | 役割 |
 |---|---------|------|------|
-| 0 | **Request Clarifier Agent** | AI Agent | リクエスト情報の確認・補完（不足時はユーザーに質問） |
-| 1 | **Travel Planner Agent** | AI Agent + Bing | 交通手段・宿泊先を検索・提案（構造化 JSON 出力） |
-| 2 | **Policy Checker** | AI Agent + FunctionTool | 社内旅費規程との適合判定（決定論的ルール） |
-| 3 | **Approval Agent** | AI Agent | 出張申請書を作成 |
+| 0 | **Request Clarifier** | カスタム Executor (HITL) | リクエスト情報の確認・補完（不足時はユーザーに質問） |
+| 1 | **Travel Planner Agent** | Foundry Agent + Bing Grounding | 交通手段・宿泊先を検索・提案（構造化 JSON 出力） |
+| 2 | **Policy Checker** | Foundry Agent + FunctionTool | 社内旅費規程との適合判定（決定論的ルール） |
+| 3 | **Approval Agent** | Foundry Agent + MCP Tool | 出張申請書を作成し、MCP 経由で申請システムへ送信 |
 
 ### Travel Planner の構造化出力
 
@@ -66,186 +101,196 @@
 }
 ```
 
-- 日程が 1 日 → `trip_type: "日帰り"`（hotel 系フィールドは null）
-- 日程が期間 → `trip_type: "宿泊"`
-
 ---
 
-## ワークフロー図
+## 業務プロセスフロー
 
 ```mermaid
-flowchart TD
-    Start([🧑 社員：6/12 北海道大学]) --> Clarifier
+flowchart LR
+    Start([🧑 出張リクエスト]) --> Clarify["📝 情報の\n確認・補完"]
+    Clarify --> InfoCheck{情報は十分?}
+    InfoCheck -->|不足| AskUser["💬 追加情報\nを確認"] --> Clarify
+    InfoCheck -->|十分| Search["🔍 交通・宿泊\nの検索"]
+    Search --> Review{プラン確認}
+    Review -->|変更| Search
+    Review -->|OK| PolicyCheck["📑 旅費規程\nチェック"]
+    PolicyCheck --> Compliant{規程に適合?}
+    Compliant -->|NG| Reject["❌ 差し戻し"]
+    Compliant -->|OK| CreateDoc["📄 申請書作成"] --> Submit["📤 送信"] --> Done([✅ 申請完了])
 
-    subgraph Workflow["Agent Framework ワークフロー"]
-        Clarifier["🤖 Request Clarifier\n(AI: 情報確認・補完)"]
-        ClarifyQ{情報は十分?}
-        UserInput["💬 ユーザーに質問"]
-        TravelPlanner["🔍 Travel Planner Agent\n(AI + Bing: 構造化出力)"]
-        PlanConfirm{プラン確認}
-        PolicyChecker["📋 Policy Checker\n(AI + FunctionTool)"]
-        Decision{規程に適合?}
-        ToApproval["変換 Executor\n(PolicyCheckResult → プロンプト)"]
-        ApprovalAgent["✅ Approval Agent\n(AI: 申請書作成)"]
-        Rejection["❌ 差し戻し通知"]
-
-        Clarifier --> ClarifyQ
-        ClarifyQ -->|十分| TravelPlanner
-        ClarifyQ -->|不足| UserInput -->|回答| Clarifier
-        TravelPlanner --> PlanConfirm
-        PlanConfirm -->|確定| PolicyChecker
-        PlanConfirm -->|変更要望| TravelPlanner
-        PolicyChecker --> Decision
-        Decision -->|OK| ToApproval --> ApprovalAgent
-        Decision -->|NG| Rejection
-    end
-
-    ApprovalAgent --> HITL{📤 申請確認\nHuman-in-the-Loop}
-    HITL -->|送信| Done([✅ 申請システムへ送信完了])
-    HITL -->|取消| Cancel([🔄 申請取消])
+    style Start fill:#FFF3E0,stroke:#F57C00,color:#1A1A1A
+    style Done fill:#E8F5E9,stroke:#388E3C,color:#1A1A1A
+    style Reject fill:#FFEBEE,stroke:#D32F2F,color:#1A1A1A
+    style AskUser fill:#E3F2FD,stroke:#1565C0,color:#1A1A1A
 ```
 
 ---
 
-## デモの流れ（ライブデモ手順）
+## ワークフロー図（実装）
 
-### Step 1: 環境紹介（1 分）
-- Microsoft Foundry ポータルを開き、プロジェクト構成を紹介
-- Agent Framework のワークフローグラフ構造を説明
+```mermaid
+flowchart TD
+    Start([🧑 社員：自然言語で出張リクエスト]) --> MsgToStr
 
-### Step 2: 出張リクエスト & 情報確認（1 分）
-- ターミナルで `python src/workflow.py` を実行
-- 「6/12 北海道大学」のように簡潔に入力
-- Request Clarifier が情報を整理し、不足があればユーザーに質問
+    subgraph Workflow["Agent Framework ワークフロー"]
 
-### Step 3: 旅程提案 & プラン確認（2 分）
-- Travel Planner Agent が Bing Grounding で交通手段・宿泊先を検索・提案
-- **構造化出力** で `trip_type`（日帰り/宿泊）・交通手段（区間ごと）・宿泊先を JSON 出力
-- ユーザーがプランを確認し、変更要望があればチャットで入力 → 再検索
+        subgraph ClarifyLoop["Step 0 — 情報確認"]
+            MsgToStr["MessageToStr"]
+            Clarifier["🤖 Request Clarifier\n(情報確認・補完)"]
+            ClarifyQ{情報は十分?}
+            UserInput["💬 ユーザーに質問\n(HITL)"]
+            ClarifyDirect["ClarificationDirect\n(ラウンド上限到達)"]
+        end
 
-### Step 4: 規程チェック（2 分）
-- Policy Checker（FunctionTool）が旅費規程をチェック
-- 「宿泊費 ¥8,500 は上限 ¥12,000 以内 → ✅」のように判定
-- **条件分岐エッジ** で OK/NG を自動ルーティング
+        subgraph PlanLoop["Step 1 — 旅程検索・レビュー"]
+            TravelPlanner["🔍 Travel Planner Agent\n(Foundry + Bing Grounding)"]
+            PlanConfirm["📋 PlanReview\n(HITL: プラン確認)"]
+        end
 
-### Step 5: 申請確認（2 分）
-- Approval Agent が正式な出張申請書を自動作成
-- **Human-in-the-Loop** で申請者本人が内容を確認し、申請システムへ送信
+        subgraph PolicyCheck["Step 2 — 規程チェック"]
+            ToPolicyInput["ToPolicyInput"]
+            PolicyChecker["📋 Policy Checker\n(Foundry + FunctionTool)"]
+            Decision{規程に適合?}
+        end
+
+        subgraph Submit["Step 3 — 申請"]
+            ToApproval["ToApprovalInput"]
+            ApprovalAgent["✅ Approval Agent\n(Foundry + MCP Tool)"]
+        end
+
+        Rejection["❌ 差し戻し通知"]
+
+        MsgToStr --> Clarifier
+        Clarifier --> ClarifyQ
+        ClarifyQ -->|十分| TravelPlanner
+        ClarifyQ -->|不足| UserInput -->|回答| Clarifier
+        UserInput -->|ラウンド上限| ClarifyDirect --> TravelPlanner
+        TravelPlanner --> PlanConfirm
+        PlanConfirm -->|変更要望| TravelPlanner
+        PlanConfirm -->|確定| ToPolicyInput
+        ToPolicyInput --> PolicyChecker --> Decision
+        Decision -->|OK| ToApproval --> ApprovalAgent
+        Decision -->|NG| Rejection
+    end
+
+    ApprovalAgent -->|MCP Protocol| Done([✅ 申請システムへ送信完了])
+```
+
+---
+
+## プロジェクト構成
+
+```
+.
+├── app/
+│   ├── Dockerfile                  # マルチステージ (Node + Python)
+│   ├── frontend/                   # Next.js 15 (静的エクスポート)
+│   │   └── src/
+│   └── backend/                    # FastAPI + Agent Framework
+│       └── app/
+│           ├── main.py             # エントリーポイント + 静的ファイル配信
+│           ├── routers/            # conversations, stream (SSE), travel_requests
+│           ├── services/           # cosmos, foundry, mcp_client
+│           └── workflow/
+│               ├── builder.py      # WorkflowBuilder グラフ定義
+│               ├── nodes/          # clarifier, travel_planner, plan_review, submit
+│               └── policy.py       # 旅費規程ルールエンジン
+├── mcp-tools/                      # Azure Functions MCP Server
+│   ├── function_app.py             # MCP JSON-RPC エンドポイント
+│   └── tools/                      # submit_travel_request, cosmos_client
+├── infra/                          # Bicep IaC
+│   ├── main.bicep                  # オーケストレーション
+│   └── modules/                    # ai-account, ai-project, cosmos-db, container-apps, ...
+├── scripts/
+│   └── build_agents.py             # Foundry Agent ビルドスクリプト
+├── deploy.sh                       # ワンショットデプロイスクリプト
+├── docker-compose.yml              # ローカル開発 (Cosmos エミュレータ付き)
+└── .env.sample                     # 環境変数テンプレート
+```
 
 ---
 
 ## 実行方法
 
 ### 前提条件
-- Python 3.12+
-- Azure CLI (`az login` 済み)
-- Azure Foundry プロジェクト
 
-### セットアップ
+- Python 3.13+, Node.js 22+
+- Azure CLI (`az login` 済み)
+- Docker (ローカル開発時)
+
+### Azure インフラデプロイ
 
 ```bash
-# 1. Azure インフラのデプロイ
+# 1. Bicep でインフラ一式をデプロイ（.env が自動生成される）
 bash deploy.sh
 
-# 2. 依存パッケージのインストール
-pip install -r requirements.txt
-
-# 3. .env ファイルの確認
-cat .env
+# 2. Foundry Agent をビルド
+python scripts/build_agents.py
 ```
 
-### 実行
+### ローカル開発
 
 ```bash
-# ローカル実行（対話型 CLI）
-python src/workflow.py
+# Cosmos DB エミュレータ + アプリを起動
+docker compose up
+
+# または個別に起動
+cd app/frontend && npm install && npm run dev    # http://localhost:3000
+cd app/backend  && pip install -r requirements.txt && uvicorn app.main:app --reload  # http://localhost:8000
 ```
 
-### ホステッドエージェントとしてデプロイ
-
-ワークフローを Foundry Agent Service のホステッドエージェントとしてデプロイできます。
-ホステッド版（`src/hosted.py`）は非対話型で、HTTP API 経由でリクエストを受け付けます。
-
-#### ローカルテスト
+### 本番デプロイ (Container Apps)
 
 ```bash
-# ホステッドエージェントをローカルで起動（localhost:8088）
-python src/hosted.py
+# ACR にイメージをビルド & プッシュ
+az acr build --registry <YOUR_ACR> --platform linux/amd64 \
+  --image travel-agent:latest ./app
+
+# Container App を更新
+az containerapp update --name <APP_NAME> \
+  --resource-group <RG> \
+  --image <ACR>.azurecr.io/travel-agent:latest
 ```
 
-```bash
-# 別ターミナルからリクエスト
-curl -sS -X POST http://localhost:8088/responses \
-  -H "Content-Type: application/json" \
-  -d '{"input": "6/12 北海道大学", "stream": false}'
+### 環境変数
+
+`.env.sample` を `.env` にコピーして設定してください（`deploy.sh` 使用時は自動生成されます）。
+
 ```
-
-#### デプロイ手順
-
-```bash
-# 1. Docker イメージをビルド（linux/amd64 必須）
-az acr build --registry <YOUR_ACR> --platform linux/amd64 --image travel-request-agent:latest .
-
-# 2. サブエージェントをビルド
-python src/build_agents.py
-
-# 3. ホステッドエージェントを登録
-python src/build_agents.py --deploy
+AZURE_AI_PROJECT_ENDPOINT=https://<account>.services.ai.azure.com/api/projects/<project>
+AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5.4
+BING_CONNECTION_NAME=<account>-bing-grounding
+MCP_TOOL_ENDPOINT=https://<function-app>.azurewebsites.net/api/mcp
+MCP_FUNCTION_APP_CLIENT_ID=<entra-app-client-id>
+APPLICATIONINSIGHTS_CONNECTION_STRING=<connection-string>
 ```
-
-#### ホステッドエージェントの呼び出し
-
-```python
-from azure.identity import DefaultAzureCredential
-from azure.ai.projects import AIProjectClient
-
-client = AIProjectClient(
-    endpoint="<PROJECT_ENDPOINT>",
-    credential=DefaultAzureCredential(),
-)
-openai = client.get_openai_client()
-
-# 会話を作成
-conversation = openai.conversations.create()
-
-# Step 1: 出張リクエスト
-response = openai.responses.create(
-    conversation=conversation.id,
-    extra_body={"agent_reference": {"name": "travel-request-agent", "type": "agent_reference"}},
-    input="6/12に東京出張、顧客訪問",
-)
-# → HITL: プラン確認が返される（function_call name="__hosted_agent_adapter_hitl__"）
-
-# Step 2: HITL 承認（ストリーミング推奨 — 100秒タイムアウト回避）
-import json
-hitl_call_id = next(
-    item.call_id for item in response.output
-    if hasattr(item, 'name') and item.name == '__hosted_agent_adapter_hitl__'
-)
-response2 = openai.responses.create(
-    conversation=conversation.id,
-    extra_body={"agent_reference": {"name": "travel-request-agent", "type": "agent_reference"}},
-    input=[{"call_id": hitl_call_id, "output": json.dumps({"approved": True}), "type": "function_call_output"}],
-    stream=True,
-)
-for event in response2:
-    pass  # ストリーミングイベントを消費
-# → 規程チェック → 申請書作成 → 送信完了
-```
-
-> **注意**: HITL 承認（Step 2）は `stream=True` を使用してください。
-> 後続ワークフロー（PolicyChecker → ApprovalAgent）の実行に時間がかかるため、
-> 非ストリーミングではプラットフォームの 100 秒タイムアウトに達する可能性があります。
-
-| ファイル | 説明 |
-|---------|------|
-| `src/hosted.py` | ホステッドエージェント版エントリーポイント |
-| `Dockerfile` | コンテナイメージ定義 |
-| `agent.yaml` | Azure Developer CLI 用マニフェスト |
 
 ---
 
-## デモで使うサンプルデータ
+## デモの流れ
+
+### Step 1: 環境紹介
+- Foundry ポータルでプロジェクト構成・エージェント一覧を紹介
+- Web UI を開き、アーキテクチャを説明
+
+### Step 2: 出張リクエスト & 情報確認
+- Web UI から「6/12 北海道大学」のように簡潔に入力
+- Request Clarifier が情報を整理し、不足があればチャットで質問
+
+### Step 3: 旅程提案 & プラン確認
+- Travel Planner が Bing Grounding で交通手段・宿泊先を検索
+- **構造化出力** でプランを提示 → ユーザーが HITL で確認・変更要望
+
+### Step 4: 規程チェック
+- Policy Checker が旅費規程をチェック（例: 「宿泊費 ¥8,500 ≤ 上限 ¥12,000 → ✅」）
+- **条件分岐エッジ** で OK/NG を自動ルーティング
+
+### Step 5: 申請送信
+- Approval Agent が申請書を作成し、MCP 経由で申請システムへ送信
+
+---
+
+## サンプルデータ
 
 ### 入力例（自然言語）
 
@@ -261,6 +306,7 @@ for event in response2:
 ```
 
 ### 社内旅費規程
+
 | 項目 | 規程内容 |
 |------|---------|
 | 宿泊費上限 | ¥12,000/泊 |
@@ -272,78 +318,42 @@ for event in response2:
 
 ---
 
-## アーキテクチャ構成図
-
-```mermaid
-flowchart LR
-    subgraph Client["クライアント"]
-        User["👤 社員\nターミナル"]
-    end
-
-    subgraph Foundry["Microsoft Foundry"]
-        subgraph AF["Agent Framework"]
-            WF["WorkflowBuilder\nグラフ定義"]
-        end
-        subgraph Agents["エージェント"]
-            RC["Request Clarifier\n(AI Agent)"]
-            TP["Travel Planner\n(AI Agent + Bing)"]
-            PC["Policy Checker\n(AI Agent + FunctionTool)"]
-            AP["Approval Agent\n(AI Agent)"]
-        end
-    end
-
-    subgraph Model["AI モデル"]
-        GPT["GPT-5.4\nFoundryChatClient"]
-    end
-
-    subgraph Gov["ガバナンス"]
-        Entra["Entra ID\n認証"]
-        Monitor["Azure Monitor\nトレース"]
-    end
-
-    User --> WF
-    WF --> RC --> GPT
-    WF --> TP --> GPT
-    WF --> PC --> GPT
-    WF --> AP --> GPT
-    Foundry --> Gov
-```
-
----
-
-## エンタープライズ設計のポイント（トーク補足）
-
-### Agent Framework の利点
-- **ワークフロー可視化**: グラフベースで処理フローが明確
-- **AI + ルールの融合**: AI エージェントと決定論的ロジックを同一ワークフローに統合
-- **型安全**: Pydantic 構造化出力でエージェント間のデータ受け渡しが堅牢
-- **条件分岐**: エッジ条件でビジネスルールに基づく自動ルーティング
-
-### ガバナンス
-- **Entra ID** によるユーザー認証とエージェントの ID 管理
-- **RBAC** でエージェントごとのツールアクセス権限を制御
-- 全申請の **監査ログ** を Azure Monitor に自動記録
-
-### セキュリティ
-- **Private VNet** 対応で社内規程データが外部に出ない
-- Policy Checker による**自動コンプライアンスチェック**
-
-### 可観測性
-- **OpenTelemetry** ベースで全エージェントの処理フローをトレース
-- エージェント単位のレイテンシ・コストをモニタリング
-
-### 拡張性
-- エージェント追加で機能拡張が容易（例: 経費精算エージェント、海外出張対応エージェント）
-- **MCP / A2A** プロトコルで外部システム（経費精算・勤怠等）と連携可能
-
----
-
 ## 使用する Azure サービス一覧
 
 | サービス | 用途 |
 |---------|------|
-| Microsoft Foundry Agent Service | エージェントのホスティング・ワークフロー実行 |
-| Azure OpenAI Service (GPT-5.4) | 各エージェントの LLM バックエンド |
-| Microsoft Agent Framework | ワークフロー定義・エージェントオーケストレーション |
-| Microsoft Entra ID | 認証・認可 |
-| Azure Monitor | トレース・監査ログ |
+| Azure AI Foundry (AI Services) | エージェントホスティング・GPT-5.4 モデルデプロイ |
+| Bing Search (Grounding) | Travel Planner の検索バックエンド |
+| Azure Container Apps | Frontend + Backend の統合ホスティング |
+| Azure Container Registry | コンテナイメージ管理 |
+| Azure Cosmos DB | 会話メタデータ・チェックポイント・イベント永続化 |
+| Azure Functions | MCP Server（申請登録ツール） |
+| Application Insights | OpenTelemetry トレース・監視 |
+| Microsoft Entra ID | 認証・認可（Managed Identity + RBAC） |
+
+---
+
+## エンタープライズ設計のポイント
+
+### Agent Framework
+- **グラフベースのワークフロー**: `WorkflowBuilder` で処理フローを宣言的に定義
+- **AI + ルールの融合**: AI Agent と決定論的ロジック（旅費規程）を同一グラフに統合
+- **型安全**: Pydantic 構造化出力でエージェント間のデータ受け渡しが堅牢
+- **条件分岐エッジ**: ビジネスルールに基づく自動ルーティング
+
+### Human-in-the-Loop
+- **SSE + REST**: リアルタイム双方向通信でプランレビュー・情報確認をブラウザ上で実現
+- **ワークフローチェックポイント**: Cosmos DB に状態を永続化し、HITL 中断・再開に対応
+
+### ガバナンス & セキュリティ
+- **Managed Identity + RBAC**: Container Apps / Functions にシステム割り当て ID、Cosmos DB データ投稿者ロール
+- **Entra ID EasyAuth**: MCP Functions への認証付きアクセス
+- Policy Checker による**自動コンプライアンスチェック**
+
+### 可観測性
+- **OpenTelemetry** ベースで全エージェントの処理フローをトレース
+- Application Insights でレイテンシ・コストをモニタリング
+
+### 拡張性
+- エージェント追加で機能拡張が容易（例: 経費精算エージェント、海外出張対応エージェント）
+- **MCP プロトコル** で外部システム（経費精算・勤怠等）と疎結合に連携

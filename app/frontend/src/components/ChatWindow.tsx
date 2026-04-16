@@ -6,6 +6,7 @@ import { MessageBubble } from "./MessageBubble";
 import { PlanConfirmCard } from "./PlanConfirmCard";
 import { RequestConfirmCard } from "./RequestConfirmCard";
 import { ClarificationForm } from "./ClarificationForm";
+import { SubmitConfirmCard } from "./SubmitConfirmCard";
 
 export function ChatWindow() {
   const { messages, isLoading, hitlRequest, send } = useChat();
@@ -52,6 +53,17 @@ export function ChatWindow() {
                   disabled={disabled}
                   onConfirm={() => send("OK")}
                   onRevise={(feedback) => send(feedback)}
+                />
+              );
+            }
+            if (hitlData.type === "submit_confirmation") {
+              return (
+                <SubmitConfirmCard
+                  key={msg.id}
+                  data={hitlData.data}
+                  disabled={disabled}
+                  onConfirm={() => send("OK")}
+                  onCancel={() => send("キャンセル")}
                 />
               );
             }

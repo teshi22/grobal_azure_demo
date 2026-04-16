@@ -22,6 +22,9 @@ param aiProjectEndpoint string = ''
 @description('MCP ツールエンドポイント')
 param mcpToolEndpoint string = ''
 
+@description('MCP Functions 用 Entra アプリクライアント ID（MI トークン取得用）')
+param mcpFunctionAppClientId string = ''
+
 @description('Application Insights 接続文字列')
 param appInsightsConnectionString string = ''
 
@@ -68,6 +71,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_AI_PROJECT_ENDPOINT', value: aiProjectEndpoint }
             { name: 'COSMOS_ENDPOINT', value: cosmosEndpoint }
             { name: 'MCP_TOOL_ENDPOINT', value: mcpToolEndpoint }
+            { name: 'MCP_FUNCTION_APP_CLIENT_ID', value: mcpFunctionAppClientId }
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
             { name: 'ENABLE_DOCS', value: 'false' }
           ]

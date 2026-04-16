@@ -8,6 +8,12 @@ checkpoints/
 infra/
 scripts/
 *.md
+*.png
 deploy.sh
+docker-compose.yml
 .dockerignore
+.gitignore
 .playwright-mcp/
+docs/
+mcp-tools/
+requirements.txt

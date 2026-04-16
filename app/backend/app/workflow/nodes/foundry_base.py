@@ -30,10 +30,12 @@ class FoundryAgentNode(Executor):
         id: str,
         agent_name: str,
         function_handler: Any | None = None,
+        is_terminal: bool = False,
     ):
         super().__init__(id=id)
         self.agent_name = agent_name
         self.function_handler = function_handler
+        self.is_terminal = is_terminal
 
     @handler(input=str, output=str)
     async def invoke(self, input_text, ctx) -> None:
@@ -41,7 +43,10 @@ class FoundryAgentNode(Executor):
         ctx.set_state(f"{self.id}_response", text)
         if func_result is not None:
             ctx.set_state(f"{self.id}_function_result", func_result)
-        await ctx.send_message(text)
+        if self.is_terminal:
+            await ctx.yield_output(text)
+        else:
+            await ctx.send_message(text)
 
     def _call_agent(self, input_text: str) -> tuple[str, dict | None]:
         t0 = time.perf_counter()
