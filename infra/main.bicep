@@ -159,6 +159,34 @@ resource appCosmosRbac 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments
   }
 }
 
+// AI Services RBAC: アプリの Managed Identity に Cognitive Services User + Azure AI Developer を付与
+resource aiAccountRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
+  name: accountName
+}
+
+var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
+var azureAIDeveloperRoleId = '64702f94-c441-49e6-a78b-ef80e0188fee'
+
+resource appCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(aiAccountRef.id, envName, cognitiveServicesUserRoleId)
+  scope: aiAccountRef
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUserRoleId)
+    principalId: containerApps.outputs.appPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource appAIDeveloper 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(aiAccountRef.id, envName, azureAIDeveloperRoleId)
+  scope: aiAccountRef
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', azureAIDeveloperRoleId)
+    principalId: containerApps.outputs.appPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // =============================================================================
 // 8. Azure Functions (MCP ツール)
 // =============================================================================
