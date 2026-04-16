@@ -531,6 +531,18 @@ async def resume_workflow_async(
             )
             return
 
+        # プラン確認で変更要望 → TravelPlanner に変更要望付きで再検索
+        if hitl_step == "plan_review" and not is_approved and plan_text:
+            revision_request = (
+                f"以下の出張プランを変更してください。\n\n"
+                f"【前回のプラン】\n{plan_text}\n\n"
+                f"【変更要望】\n{user_input}"
+            )
+            await _run_travel_planner_direct(
+                revision_request, conversation_id, event_store, conv_store,
+            )
+            return
+
         # 申請確認で承認 → MCP 申請送信
         if hitl_step == "submit_confirmation" and is_approved and plan_text:
             policy_display = conv.get("policy_display", "") if conv else ""
