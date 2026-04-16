@@ -18,7 +18,6 @@ from app.services.cosmos import (
     get_conversation_store,
     get_event_store,
 )
-from app.services.mcp_client import call_submit_tool
 from app.workflow.builder import create_workflow_builder
 from app.workflow.models import (
     ClarificationHITLRequest,
@@ -239,7 +238,7 @@ async def _run_submit_and_complete(
     event_store,
     conv_store,
 ) -> None:
-    """申請確認後: MCP 申請送信 → 完了"""
+    """申請確認後: Foundry ApprovalAgent (MCPTool) で申請送信 → 完了"""
 
     await event_store.append(
         conversation_id=conversation_id,
@@ -250,21 +249,23 @@ async def _run_submit_and_complete(
         ),
     )
 
-    submit_result = await call_submit_tool(
-        {"application_text": plan_text},
-        conversation_id=conversation_id,
+    # Foundry ApprovalAgent を直接呼び出し (MCPTool がサーバーサイドで MCP を呼ぶ)
+    from app.config import settings
+    from app.workflow.nodes.foundry_base import FoundryAgentNode
+
+    node = FoundryAgentNode(
+        id="approval_agent",
+        agent_name=settings.approval_agent,
+        is_terminal=True,
     )
+    approval_input = (
+        f"以下の出張プランで申請書を作成し、submit_travel_request ツールで送信してください。\n\n"
+        f"【旅程プラン】\n{plan_text}\n\n"
+        f"【旅費規程チェック】\n{policy_display}"
+    )
+    agent_text, _ = await asyncio.to_thread(node._call_agent, approval_input)
 
-    output = _format_plan_complete(plan_text)
-    output += f"\n\n📋 規程チェック: 適合 ✅\n{policy_display}"
-
-    status = submit_result.get("status")
-    if status == "submitted":
-        output += "\n\n📤 出張申請を申請システムへ送信しました！"
-    elif status == "skipped":
-        output += "\n\n⚠️ 申請システム未設定のため送信はスキップされました。"
-    else:
-        output += f"\n\n❌ 申請送信に失敗: {submit_result.get('message', '不明')}"
+    output = agent_text
 
     await event_store.append(
         conversation_id=conversation_id,

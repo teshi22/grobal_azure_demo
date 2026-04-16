@@ -3,7 +3,6 @@
 from agent_framework import WorkflowBuilder
 
 from app.config import settings
-from app.services.mcp_client import call_submit_tool_sync
 from app.workflow.nodes.clarifier import (
     ClarificationDirectStep,
     ClarificationToRequestStep,
@@ -76,7 +75,6 @@ def create_workflow_builder() -> WorkflowBuilder:
     approval_agent = FoundryAgentNode(
         id="approval_agent",
         agent_name=settings.approval_agent,
-        function_handler=call_submit_tool_sync,
         is_terminal=True,
     )
 

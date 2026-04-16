@@ -22,6 +22,7 @@ from azure.ai.projects.models import (
     BingGroundingTool,
     FunctionTool,
     HostedAgentDefinition,
+    MCPTool,
     PromptAgentDefinition,
     ProtocolVersionRecord,
 )
@@ -41,6 +42,7 @@ load_dotenv()
 PROJECT_ENDPOINT = os.environ["AZURE_AI_PROJECT_ENDPOINT"]
 MODEL = os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-5.4")
 BING_CONNECTION_ID = os.environ.get("BING_PROJECT_CONNECTION_ID", "")
+MCP_TOOL_ENDPOINT = os.environ.get("MCP_TOOL_ENDPOINT", "")
 ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 
 # ---------------------------------------------------------------------------
@@ -254,21 +256,11 @@ check_travel_policy ツールを使って判定を行ってください。
 - 失敗時: 「❌ 申請の送信に失敗しました。」とエラー内容
 """,
         "tools_factory": lambda: [
-            FunctionTool(
-                name="submit_travel_request",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "application_text": {
-                            "type": "string",
-                            "description": "出張プランのJSONデータ文字列",
-                        },
-                    },
-                    "required": ["application_text"],
-                    "additionalProperties": False,
-                },
-                description="出張申請を申請システムに送信する",
-                strict=False,
+            MCPTool(
+                server_label="travel-mcp",
+                server_url=MCP_TOOL_ENDPOINT,
+                server_description="出張申請システムのMCPサーバー。出張申請の送信ツールを提供する。",
+                require_approval="never",
             ),
         ],
     },
