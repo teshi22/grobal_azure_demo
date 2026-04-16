@@ -26,3 +26,4 @@ app/backend/.venv/
 
 # MCP Tools
 mcp-tools/.python_packages/
+.env
