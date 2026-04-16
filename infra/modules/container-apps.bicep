@@ -32,11 +32,17 @@ param mcpFunctionAppClientId string = ''
 @description('Application Insights 接続文字列')
 param appInsightsConnectionString string = ''
 
-// Container Apps Environment
+// Container Apps Environment (Workload Profile — Consumption)
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
   location: location
   properties: {
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
     appLogsConfiguration: logAnalyticsCustomerId != ''
       ? {
           destination: 'log-analytics'
@@ -59,6 +65,12 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: env.id
     configuration: {
+      registries: [
+        {
+          server: acrLoginServer
+          identity: 'system'
+        }
+      ]
       ingress: {
         external: true
         targetPort: 8000

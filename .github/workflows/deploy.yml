@@ -1,0 +1,135 @@
+name: Deploy Travel Agent App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_agents:
+        description: 'Foundry エージェントも再作成する'
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-travel-agent-demo
+  ACR_NAME: travelacribsh
+  ACR_LOGIN_SERVER: travelacribsh.azurecr.io
+  CONTAINER_APP_NAME: travelenvibsh-app
+  FUNCTION_APP_NAME: travelfuncibsh
+  FUNC_STORAGE_ACCOUNT: travelfsibsh
+  IMAGE_NAME: travel-agent-app
+
+jobs:
+  # ===========================================================================
+  # Job 1: アプリのビルド & Container Apps デプロイ
+  # ===========================================================================
+  build-and-deploy-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR Login
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Docker Build & Push
+        run: |
+          IMAGE_TAG="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          IMAGE_LATEST="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest"
+          docker build -t "$IMAGE_TAG" -t "$IMAGE_LATEST" ./app
+          docker push "$IMAGE_TAG"
+          docker push "$IMAGE_LATEST"
+
+      - name: Update Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+
+  # ===========================================================================
+  # Job 2: MCP Functions デプロイ
+  # ===========================================================================
+  deploy-mcp-functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build MCP Functions Package
+        run: |
+          DEPLOY_DIR="/tmp/mcp-deploy"
+          mkdir -p "$DEPLOY_DIR"
+          cp -r mcp-tools/function_app.py mcp-tools/host.json mcp-tools/tools "$DEPLOY_DIR/"
+          pip install --quiet -r mcp-tools/requirements.txt \
+            --target "$DEPLOY_DIR/.python_packages/lib/site-packages" \
+            --platform manylinux2014_x86_64 --python-version 3.11 \
+            --implementation cp --abi cp311 --only-binary=:all:
+          (cd "$DEPLOY_DIR" && zip -qr /tmp/mcp-deploy.zip .)
+
+      - name: Upload to Storage & Restart
+        run: |
+          az storage blob upload \
+            --account-name ${{ env.FUNC_STORAGE_ACCOUNT }} \
+            --container-name function-releases \
+            --file /tmp/mcp-deploy.zip \
+            --name mcp-deploy.zip \
+            --overwrite --auth-mode login --output none
+          az functionapp restart \
+            --name ${{ env.FUNCTION_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --output none
+
+  # ===========================================================================
+  # Job 3: Foundry エージェント作成 (手動 or agents 定義変更時)
+  # ===========================================================================
+  build-agents:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_agents == 'true'
+    needs: [build-and-deploy-app]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build Foundry Agents
+        env:
+          AZURE_AI_PROJECT_ENDPOINT: ${{ vars.AZURE_AI_PROJECT_ENDPOINT }}
+          AZURE_AI_MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME }}
+          BING_PROJECT_CONNECTION_ID: ${{ vars.BING_PROJECT_CONNECTION_ID }}
+        run: python scripts/build_agents.py

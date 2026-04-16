@@ -15,8 +15,11 @@ param projectDescription string = 'AI Travel Request Agent Demo'
 @description('プロジェクトの表示名')
 param projectDisplayName string = 'Travel Request Agent'
 
-@description('デプロイリージョン')
+@description('Foundry リソースのデプロイリージョン')
 param location string = 'swedencentral'
+
+@description('Foundry 以外のリソースのデプロイリージョン')
+param secondaryLocation string = 'japaneast'
 
 @description('GPT モデル名')
 param modelName string = 'gpt-5.4'
@@ -87,7 +90,7 @@ module appInsights 'modules/app-insights.bicep' = {
   name: 'app-insights-${uniqueSuffix}'
   params: {
     appInsightsName: '${accountName}-insights'
-    location: location
+    location: secondaryLocation
   }
 }
 
@@ -100,7 +103,7 @@ module acr 'modules/acr.bicep' = {
   name: 'acr-${uniqueSuffix}'
   params: {
     acrName: acrName
-    location: location
+    location: secondaryLocation
   }
 }
 
@@ -113,7 +116,7 @@ module cosmosDb 'modules/cosmos-db.bicep' = {
   name: 'cosmos-db-${uniqueSuffix}'
   params: {
     accountName: cosmosAccountName
-    location: location
+    location: secondaryLocation
     // RBAC は Container Apps デプロイ後に別途設定 (循環依存回避)
   }
 }
@@ -127,7 +130,7 @@ module containerApps 'modules/container-apps.bicep' = {
   name: 'container-apps-${uniqueSuffix}'
   params: {
     envName: envName
-    location: location
+    location: secondaryLocation
     acrLoginServer: acr.outputs.acrLoginServer
     cosmosEndpoint: cosmosDb.outputs.accountEndpoint
     aiProjectEndpoint: '${aiAccount.outputs.endpoint}api/projects/${projectName}'
@@ -167,7 +170,7 @@ module functions 'modules/functions.bicep' = {
   params: {
     functionAppName: functionAppName
     storageAccountName: funcStorageName
-    location: location
+    location: secondaryLocation
     appInsightsConnectionString: appInsights.outputs.connectionString
     cosmosEndpoint: cosmosDb.outputs.accountEndpoint
     mcpEntraClientId: mcpEntraClientId

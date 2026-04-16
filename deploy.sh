@@ -8,6 +8,7 @@ set -euo pipefail
 SUBSCRIPTION_ID="5290deef-ab3d-4e26-90bb-2296ecd99c71"
 RESOURCE_GROUP="rg-travel-agent-demo"
 LOCATION="swedencentral"
+SECONDARY_LOCATION="japaneast"
 
 echo "=== 出張申請エージェント デプロイ ==="
 
@@ -43,7 +44,7 @@ echo "3. Foundry インフラデプロイ中..."
 DEPLOY_OUTPUT=$(az deployment group create \
   --resource-group "$RESOURCE_GROUP" \
   --template-file infra/main.bicep \
-  --parameters location="$LOCATION" mcpEntraClientId="$MCP_ENTRA_CLIENT_ID" \
+  --parameters location="$LOCATION" secondaryLocation="$SECONDARY_LOCATION" mcpEntraClientId="$MCP_ENTRA_CLIENT_ID" \
   --query "properties.outputs" \
   --output json)
 
@@ -92,6 +93,17 @@ BING_CONNECTION_ID="${ACCOUNT_RESOURCE_ID}/projects/${PROJECT_NAME}/connections/
 
 # MCP Functions デプロイ
 echo "6. MCP Functions デプロイ中..."
+
+# デプロイユーザーに Storage Blob Data Contributor を付与 (allowSharedKeyAccess=false 対応)
+FUNC_STORAGE_ID=$(az storage account show --name "$FUNC_STORAGE" --resource-group "$RESOURCE_GROUP" --query id --output tsv)
+az role assignment create \
+  --assignee "$USER_OBJECT_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "$FUNC_STORAGE_ID" \
+  --output none 2>/dev/null || echo "  (Storage ロール割り当て済み、スキップ)"
+echo "  RBAC 伝播待機中 (30秒)..."
+sleep 30
+
 MCP_DIR="mcp-tools"
 DEPLOY_DIR="/tmp/mcp-deploy-$$"
 mkdir -p "$DEPLOY_DIR"
@@ -102,7 +114,7 @@ pip install --quiet -r "$MCP_DIR/requirements.txt" \
 (cd "$DEPLOY_DIR" && zip -qr /tmp/mcp-deploy.zip .)
 
 az storage blob upload --account-name "$FUNC_STORAGE" --container-name function-releases \
-    --file /tmp/mcp-deploy.zip --name mcp-deploy.zip --overwrite --auth-mode key --output none
+    --file /tmp/mcp-deploy.zip --name mcp-deploy.zip --overwrite --auth-mode login --output none
 az functionapp restart --name "$(echo "$DEPLOY_OUTPUT" | jq -r '.functionAppName.value')" \
     --resource-group "$RESOURCE_GROUP" --output none
 rm -rf "$DEPLOY_DIR" /tmp/mcp-deploy.zip
