@@ -157,36 +157,48 @@ async def _run_policy_check_and_complete(
         compliant = "❌" not in policy_agent_text
         details = [policy_agent_text]
 
+    # --- 不適合 → 違反項目のみ表示し、TravelPlanner に差し戻し ---
+    if not compliant:
+        violations = [d for d in details if d.startswith("❌") or d.startswith("⚠️")]
+        if not violations:
+            violations = [d for d in details if "❌" in d or "⚠️" in d]
+        if not violations:
+            violations = details
+        violation_display = "\n".join(f"  {v}" for v in violations)
+
+        await event_store.append(
+            conversation_id=conversation_id,
+            event_type="agent_response",
+            data=json.dumps(
+                {"content": f"❌ 旅費規程チェック: 不適合\n\n{violation_display}\n\nプランを修正して再検索します..."},
+                ensure_ascii=False,
+            ),
+        )
+
+        # TravelPlanner に違反内容付きで差し戻し
+        revision_request = (
+            f"以下の出張プランは旅費規程チェックで却下されました。"
+            f"違反項目を修正した新しいプランを作成してください。\n\n"
+            f"【却下されたプラン】\n{plan_text}\n\n"
+            f"【違反項目】\n{violation_display}"
+        )
+        await _run_travel_planner_direct(
+            revision_request, conversation_id, event_store, conv_store,
+        )
+        return
+
+    # --- 適合 → 申請確認 HITL ---
     policy_text_display = "\n".join(f"  {d}" for d in details)
 
-    # 規程チェック結果を SSE で送出 (エージェント応答 + ルール判定)
-    display_content = f"📋 旅費規程チェック結果\n\n{policy_text_display}"
-    if policy_agent_text and policy_agent_text.strip():
-        display_content += f"\n\n💬 PolicyChecker:\n{policy_agent_text}"
     await event_store.append(
         conversation_id=conversation_id,
         event_type="agent_response",
         data=json.dumps(
-            {"content": display_content},
+            {"content": "✅ 旅費規程チェック: 適合"},
             ensure_ascii=False,
         ),
     )
 
-    if not compliant:
-        # 不適合 → 差し戻し
-        output = (
-            f"❌ 旅費規程チェック: 不適合\n\n{policy_text_display}"
-            f"\n\nプランを修正して再申請してください。"
-        )
-        await event_store.append(
-            conversation_id=conversation_id,
-            event_type="complete",
-            data=json.dumps({"output": output}, ensure_ascii=False),
-        )
-        await conv_store.update_status(conversation_id, "completed")
-        return
-
-    # --- 2. 申請確認 HITL ---
     try:
         plan_data = json.loads(plan_text)
     except (json.JSONDecodeError, TypeError):
