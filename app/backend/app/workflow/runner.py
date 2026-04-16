@@ -124,9 +124,13 @@ async def _run_policy_check_and_complete(
     event_store,
     conv_store,
 ) -> None:
-    """プラン承認後: 旅費規程チェック → MCP 申請送信 → 完了"""
+    """プラン承認後: PolicyChecker Foundry Agent → 申請確認 HITL"""
 
-    # --- 1. 旅費規程チェック ---
+    from app.config import settings
+    from app.workflow.nodes.foundry_base import FoundryAgentNode
+
+    # --- 1. PolicyChecker Foundry Agent 呼び出し ---
+    t0 = time.perf_counter()
     await event_store.append(
         conversation_id=conversation_id,
         event_type="status",
@@ -136,31 +140,34 @@ async def _run_policy_check_and_complete(
         ),
     )
 
-    try:
-        plan = json.loads(plan_text)
-    except (json.JSONDecodeError, TypeError):
-        plan = {}
+    prompt = f"以下の出張プランを旅費規程に照らしてチェックしてください:\n\n{plan_text}"
+    node = FoundryAgentNode(
+        id="policy_checker",
+        agent_name=settings.policy_checker_agent,
+        function_handler=evaluate_policy,
+    )
+    policy_agent_text, func_result = await asyncio.to_thread(node._call_agent, prompt)
+    t1 = time.perf_counter()
+    logger.info("[PERF] PolicyChecker agent: %.3fs", t1 - t0)
 
-    policy_result = evaluate_policy({
-        "hotel_cost_per_night": plan.get("hotel_cost_per_night", 0),
-        "transportation": " ".join(
-            leg.get("method", "") for leg in plan.get("transportation_legs", [])
-        ),
-        "distance_km": plan.get("distance_km", 0),
-        "travel_time_hours": plan.get("travel_time_hours", 0),
-        "needs_pre_night_stay": plan.get("needs_pre_night_stay", False),
-    })
+    if func_result:
+        compliant = func_result["compliant"]
+        details = func_result["details"]
+    else:
+        compliant = "❌" not in policy_agent_text
+        details = [policy_agent_text]
 
-    compliant = policy_result["compliant"]
-    details = policy_result["details"]
     policy_text_display = "\n".join(f"  {d}" for d in details)
 
-    # 規程チェック結果を SSE で送出
+    # 規程チェック結果を SSE で送出 (エージェント応答 + ルール判定)
+    display_content = f"📋 旅費規程チェック結果\n\n{policy_text_display}"
+    if policy_agent_text and policy_agent_text.strip():
+        display_content += f"\n\n💬 PolicyChecker:\n{policy_agent_text}"
     await event_store.append(
         conversation_id=conversation_id,
         event_type="agent_response",
         data=json.dumps(
-            {"content": f"📋 旅費規程チェック結果\n\n{policy_text_display}"},
+            {"content": display_content},
             ensure_ascii=False,
         ),
     )
