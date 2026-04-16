@@ -36,9 +36,8 @@ param modelCapacity int = 30
 @description('MCP Functions 用 Entra ID アプリ登録のクライアント ID')
 param mcpEntraClientId string = ''
 
-// ユニークサフィックス生成
-param deploymentTimestamp string = utcNow('yyyyMMddHHmmss')
-var uniqueSuffix = substring(uniqueString('${resourceGroup().id}-${deploymentTimestamp}'), 0, 4)
+// ユニークサフィックス生成 (リソースグループに対して決定論的)
+var uniqueSuffix = substring(uniqueString(resourceGroup().id), 0, 4)
 var accountName = toLower('${aiServicesName}${uniqueSuffix}')
 
 // =============================================================================
@@ -135,6 +134,8 @@ module containerApps 'modules/container-apps.bicep' = {
     mcpToolEndpoint: functions.outputs.mcpEndpoint
     mcpFunctionAppClientId: mcpEntraClientId
     appInsightsConnectionString: appInsights.outputs.connectionString
+    logAnalyticsCustomerId: appInsights.outputs.logAnalyticsCustomerId
+    logAnalyticsSharedKey: appInsights.outputs.logAnalyticsSharedKey
   }
 }
 

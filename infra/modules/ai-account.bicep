@@ -1,9 +1,22 @@
+@description('AI Services アカウント名')
 param accountName string
+
+@description('デプロイリージョン')
 param location string
+
+@description('モデル名')
 param modelName string
+
+@description('モデルフォーマット')
 param modelFormat string
+
+@description('モデルバージョン')
 param modelVersion string
+
+@description('モデル SKU 名')
 param modelSkuName string
+
+@description('モデルキャパシティ (TPM)')
 param modelCapacity int
 
 #disable-next-line BCP081
@@ -26,7 +39,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
       ipRules: []
     }
     publicNetworkAccess: 'Enabled'
-    disableLocalAuth: false
+    disableLocalAuth: true
   }
 }
 

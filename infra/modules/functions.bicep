@@ -36,6 +36,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     minimumTlsVersion: 'TLS1_2'
     publicNetworkAccess: 'Enabled'
     allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
   }
 }
 
@@ -61,6 +62,38 @@ resource funcStorageBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-0
   scope: storage
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataOwnerRoleId)
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Storage Queue Data Contributor (Functions ランタイム内部通信用)
+var storageQueueDataContributorRoleId = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+
+resource funcStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.id, storageQueueDataContributorRoleId)
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      storageQueueDataContributorRoleId
+    )
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Storage Table Data Contributor (Functions ランタイム内部通信用)
+var storageTableDataContributorRoleId = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+
+resource funcStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.id, storageTableDataContributorRoleId)
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      storageTableDataContributorRoleId
+    )
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
@@ -94,10 +127,22 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       appSettings: [
         // Identity-based Storage 接続 (allowSharedKeyAccess=false 対応)
         { name: 'AzureWebJobsStorage__accountName', value: storage.name }
-        { name: 'AzureWebJobsStorage__blobServiceUri', value: 'https://${storage.name}.blob.core.windows.net' }
-        { name: 'AzureWebJobsStorage__queueServiceUri', value: 'https://${storage.name}.queue.core.windows.net' }
-        { name: 'AzureWebJobsStorage__tableServiceUri', value: 'https://${storage.name}.table.core.windows.net' }
-        { name: 'WEBSITE_RUN_FROM_PACKAGE', value: 'https://${storage.name}.blob.core.windows.net/function-releases/mcp-deploy.zip' }
+        {
+          name: 'AzureWebJobsStorage__blobServiceUri'
+          value: 'https://${storage.name}.blob.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__queueServiceUri'
+          value: 'https://${storage.name}.queue.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__tableServiceUri'
+          value: 'https://${storage.name}.table.${environment().suffixes.storage}'
+        }
+        {
+          name: 'WEBSITE_RUN_FROM_PACKAGE'
+          value: 'https://${storage.name}.blob.${environment().suffixes.storage}/function-releases/mcp-deploy.zip'
+        }
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }

@@ -10,8 +10,12 @@ param envName string
 @description('ACR ログインサーバー')
 param acrLoginServer string
 
-@description('Log Analytics ワークスペース ID')
-param logAnalyticsWorkspaceId string = ''
+@description('Log Analytics ワークスペース カスタマー ID')
+param logAnalyticsCustomerId string = ''
+
+@secure()
+@description('Log Analytics ワークスペース 共有キー')
+param logAnalyticsSharedKey string = ''
 
 @description('Cosmos DB エンドポイント')
 param cosmosEndpoint string = ''
@@ -33,12 +37,15 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
   location: location
   properties: {
-    appLogsConfiguration: logAnalyticsWorkspaceId != '' ? {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logAnalyticsWorkspaceId
-      }
-    } : null
+    appLogsConfiguration: logAnalyticsCustomerId != ''
+      ? {
+          destination: 'log-analytics'
+          logAnalyticsConfiguration: {
+            customerId: logAnalyticsCustomerId
+            sharedKey: logAnalyticsSharedKey
+          }
+        }
+      : null
   }
 }
 
@@ -74,6 +81,26 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'MCP_FUNCTION_APP_CLIENT_ID', value: mcpFunctionAppClientId }
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
             { name: 'ENABLE_DOCS', value: 'false' }
+          ]
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/health'
+                port: 8000
+              }
+              periodSeconds: 30
+              failureThreshold: 3
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/health'
+                port: 8000
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+            }
           ]
         }
       ]

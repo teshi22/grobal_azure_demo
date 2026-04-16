@@ -1,4 +1,7 @@
+@description('親 AI Services アカウント名')
 param accountName string
+
+@description('Bing Search リソース名')
 param bingSearchName string = 'bingsearch-${accountName}'
 
 #disable-next-line BCP081
@@ -25,7 +28,7 @@ resource bingConnection 'Microsoft.CognitiveServices/accounts/connections@2025-0
     target: 'https://api.bing.microsoft.com/'
     authType: 'ApiKey'
     credentials: {
-      key: listKeys(bingSearch.id, '2020-06-10').key1
+      key: bingSearch.listKeys().key1
     }
     isSharedToAll: true
     metadata: {

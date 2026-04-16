@@ -1,7 +1,16 @@
+@sys.description('親 AI Services アカウント名')
 param accountName string
+
+@sys.description('デプロイリージョン')
 param location string
+
+@sys.description('プロジェクト名')
 param projectName string
+
+@sys.description('プロジェクトの説明')
 param description string
+
+@sys.description('プロジェクトの表示名')
 param displayName string
 
 #disable-next-line BCP081

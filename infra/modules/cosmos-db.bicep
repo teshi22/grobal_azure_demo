@@ -10,9 +10,6 @@ param accountName string
 @description('データベース名')
 param databaseName string = 'travel-agent'
 
-@description('バックエンド Container App のプリンシパル ID (RBAC用)')
-param backendPrincipalId string = ''
-
 // Cosmos DB アカウント (Serverless)
 resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
   name: accountName
@@ -130,19 +127,6 @@ resource travelRequestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
         ]
       }
     }
-  }
-}
-
-// RBAC: バックエンドに Cosmos DB データ投稿者ロールを付与
-var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
-
-resource backendCosmosRbac 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = if (backendPrincipalId != '') {
-  parent: cosmosAccount
-  name: guid(cosmosAccount.id, backendPrincipalId, cosmosDataContributorRoleId)
-  properties: {
-    roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/${cosmosDataContributorRoleId}'
-    principalId: backendPrincipalId
-    scope: cosmosAccount.id
   }
 }
 
