@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      deploy_agents:
-        description: 'Foundry エージェントも再作成する'
-        type: boolean
-        default: false
 
 permissions:
   id-token: write
@@ -100,36 +95,3 @@ jobs:
             --name ${{ env.FUNCTION_APP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --output none
-
-  # ===========================================================================
-  # Job 3: Foundry エージェント作成 (手動 or agents 定義変更時)
-  # ===========================================================================
-  build-agents:
-    runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_agents == 'true'
-    needs: [build-and-deploy-app]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
-
-      - name: Build Foundry Agents
-        env:
-          AZURE_AI_PROJECT_ENDPOINT: ${{ vars.AZURE_AI_PROJECT_ENDPOINT }}
-          AZURE_AI_MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME }}
-          BING_PROJECT_CONNECTION_ID: ${{ vars.BING_PROJECT_CONNECTION_ID }}
-        run: python scripts/build_agents.py
