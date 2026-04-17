@@ -50,13 +50,9 @@ ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 # ---------------------------------------------------------------------------
 TRAVEL_POLICY = """
 【社内旅費規程】
-1. 宿泊費上限: 12,000円/泊
-2. 交通手段: 新幹線普通車・指定席を原則とする
-3. グリーン車: 乗車時間3時間超の場合に限り利用可
-4. 航空機利用: 片道600km以上、または新幹線より安価な場合に利用可
-5. 前泊: 始業時刻(9:00)に間に合わない場合に認められる
-6. 日当: 日帰り出張 3,000円/日、宿泊出張 5,000円/日
-7. タクシー: 原則禁止。深夜・早朝(22:00〜6:00)または荷物が多い場合のみ可
+1. 宿泊費上限: 1泊あたり 12,000円 を超えてはならない
+2. 日当: 日帰り出張 3,000円/日、宿泊出張 5,000円/日
+3. タクシー利用: 原則禁止（深夜・早朝 22:00〜6:00 のみ例外的に可）
 """
 
 # ---------------------------------------------------------------------------
@@ -93,6 +89,10 @@ AGENTS = [
         "env_key": "TRAVEL_PLANNER_AGENT",
         "description": "旅程検索・提案エージェント (Bing Grounding 付き)",
         "instructions": """あなたは出張の旅程を検索・提案する専門エージェントです。
+
+【ツール利用ルール — 最重要】
+回答する前に、必ず bing_grounding ツールを使って最新の交通運賃・時刻表・ホテル料金を検索してください。
+自身の知識だけで回答することは禁止です。どのようなルート（近距離・定番ルートを含む）でも必ず検索を実行してください。
 
 ユーザーの出張リクエスト(出発地、目的地、日程、目的)を受け取り、以下を検索・提案してください:
 1. 交通手段（新幹線・飛行機・在来線・バス等の時刻・料金）
@@ -161,6 +161,7 @@ transportation_legs は **乗り換えごとに1区間** として分割して�
             if BING_CONNECTION_ID
             else []
         ),
+        "tool_choice": "required",
     },
     {
         "name": "PolicyChecker",
@@ -173,9 +174,23 @@ check_travel_policy ツールを使って判定を行ってください。
 
 {TRAVEL_POLICY}
 
-出力は以下を含めてください:
-- 各項目の適合/不適合の判定結果
-- 不適合の場合、代替案の提案
+## 出力フォーマット
+
+以下の形式で必ず出力してください:
+
+【判定結果】適合 or 不適合
+
+| チェック項目 | 規程 | 申請内容 | 判定 |
+|---|---|---|---|
+| 宿泊費上限 | 12,000円/泊 | （実際の金額） | ✅ or ❌ |
+| 日当 | 日帰り3,000円/宿泊5,000円 | （該当する日当） | ✅ |
+| タクシー利用 | 原則禁止 | （利用有無） | ✅ or ❌ |
+
+※ 不適合の場合のみ、以下を追記:
+【不適合理由】
+- （不適合の項目と理由を箇条書き）
+
+【対応】本申請を却下します。修正の上、再度申請してください。
 """,
         "tools_factory": lambda: [
             FunctionTool(
@@ -183,35 +198,28 @@ check_travel_policy ツールを使って判定を行ってください。
                 parameters={
                     "type": "object",
                     "properties": {
-                        "transportation": {
-                            "type": "string",
-                            "description": "交通手段 (例: 新幹線指定席, 新幹線グリーン車, 飛行機)",
-                        },
                         "hotel_cost_per_night": {
                             "type": "number",
-                            "description": "宿泊費（1泊あたり、円）",
+                            "description": "宿泊費（1泊あたり、円）。宿泊なしの場合は0。",
                         },
-                        "needs_pre_night_stay": {
+                        "trip_type": {
+                            "type": "string",
+                            "enum": ["日帰り", "宿泊"],
+                            "description": "出張種別",
+                        },
+                        "uses_taxi": {
                             "type": "boolean",
-                            "description": "前泊が必要か",
-                        },
-
-                        "distance_km": {
-                            "type": "number",
-                            "description": "片道距離(km)",
-                        },
-                        "travel_time_hours": {
-                            "type": "number",
-                            "description": "片道所要時間(時間)",
+                            "description": "タクシー利用の有無",
                         },
                     },
                     "required": [
-                        "transportation",
                         "hotel_cost_per_night",
+                        "trip_type",
+                        "uses_taxi",
                     ],
                     "additionalProperties": False,
                 },
-                description="出張プランが社内旅費規程に適合しているかチェックする",
+                description="出張プランが社内旅費規程（宿泊費上限・日当・タクシー禁止）に適合しているかチェックする",
                 strict=False,
             ),
         ],
@@ -288,13 +296,17 @@ def build_agents():
         name = agent_def["name"]
         print(f"📦 {name} を作成中...")
 
+        definition_kwargs = dict(
+            model=MODEL,
+            instructions=agent_def["instructions"],
+            tools=agent_def["tools_factory"](),
+        )
+        if "tool_choice" in agent_def:
+            definition_kwargs["tool_choice"] = agent_def["tool_choice"]
+
         agent = project_client.agents.create_version(
             agent_name=name,
-            definition=PromptAgentDefinition(
-                model=MODEL,
-                instructions=agent_def["instructions"],
-                tools=agent_def["tools_factory"](),
-            ),
+            definition=PromptAgentDefinition(**definition_kwargs),
         )
 
         # .env にエージェント名を保存
