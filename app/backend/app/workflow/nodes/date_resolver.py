@@ -175,9 +175,10 @@ def _resolve_date_text(
         )
 
     # 範囲表現: X〜Y, X～Y, X-Y, XからY（ただし「から+泊日」は除外済み）
-    range_m = re.match(r"(.+?)\s*[〜\-からー]\s*(.+)", text)
+    range_m = re.match(r"(.+?)\s*(?:〜|\-|から|ー)\s*(.+)", text)
     if range_m:
-        start_t, end_t = range_m.group(1).strip(), range_m.group(2).strip()
+        start_t = range_m.group(1).strip()
+        end_t = re.sub(r"まで$", "", range_m.group(2).strip()).strip()
         start_d = _resolve_single(start_t, base)
         if start_d is None:
             return (
