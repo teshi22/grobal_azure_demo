@@ -7,6 +7,7 @@ import { PlanConfirmCard } from "./PlanConfirmCard";
 import { RequestConfirmCard } from "./RequestConfirmCard";
 import { ClarificationForm } from "./ClarificationForm";
 import { SubmitConfirmCard } from "./SubmitConfirmCard";
+import { PolicyResultCard } from "./PolicyResultCard";
 
 export function ChatWindow() {
   const { messages, isLoading, hitlRequest, send } = useChat();
@@ -29,6 +30,11 @@ export function ChatWindow() {
       {/* メッセージ一覧 */}
       <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
         {messages.map((msg) => {
+          // PolicyResult カード
+          if (msg.policyResult) {
+            return <PolicyResultCard key={msg.id} data={msg.policyResult} />;
+          }
+
           // HITL カードはメッセージ配列から描画
           if (msg.hitlData) {
             const disabled = !!msg.responded;

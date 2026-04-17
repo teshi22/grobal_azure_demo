@@ -4,6 +4,7 @@ export type SSEEventType =
   | "status"
   | "agent_response"
   | "hitl_request"
+  | "policy_result"
   | "complete"
   | "error";
 
@@ -23,6 +24,13 @@ export interface HITLRequestEvent {
   message: string;
 }
 
+export interface PolicyResultData {
+  compliant: boolean;
+  details: string[];
+  summary: string;
+  message?: string;
+}
+
 export interface CompleteEvent {
   output: string;
 }
@@ -40,6 +48,7 @@ export interface ChatMessage {
   timestamp: Date;
   eventType?: SSEEventType;
   hitlData?: HITLRequestEvent;
+  policyResult?: PolicyResultData;
   responded?: boolean;
 }
 

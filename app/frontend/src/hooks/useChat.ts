@@ -6,7 +6,7 @@ import {
   createEventSource,
   sendMessage,
 } from "@/lib/api";
-import type { ChatMessage, HITLRequestEvent } from "@/lib/types";
+import type { ChatMessage, HITLRequestEvent, PolicyResultData } from "@/lib/types";
 
 /** チャット状態管理フック — SSE 接続 + REST 応答 + 再接続 */
 export function useChat() {
@@ -45,11 +45,23 @@ export function useChat() {
       es.addEventListener("agent_response", (e) => {
         const data = JSON.parse(e.data);
         addMessage({
-          id: `agent-${Date.now()}`,
+          id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: "assistant",
           content: data.content,
           timestamp: new Date(),
           eventType: "agent_response",
+        });
+      });
+
+      es.addEventListener("policy_result", (e) => {
+        const data = JSON.parse(e.data) as PolicyResultData;
+        addMessage({
+          id: `policy-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          eventType: "policy_result",
+          policyResult: data,
         });
       });
 

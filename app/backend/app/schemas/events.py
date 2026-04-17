@@ -13,6 +13,7 @@ class SSEEventType(str, Enum):
     STATUS = "status"
     AGENT_RESPONSE = "agent_response"
     HITL_REQUEST = "hitl_request"
+    POLICY_RESULT = "policy_result"
     COMPLETE = "complete"
     ERROR = "error"
 

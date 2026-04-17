@@ -167,9 +167,14 @@ async def _run_policy_check_and_complete(
 
         await event_store.append(
             conversation_id=conversation_id,
-            event_type="agent_response",
+            event_type="policy_result",
             data=json.dumps(
-                {"content": f"❌ 旅費規程チェック: 不適合\n\n{violation_display}\n\nプランを修正して再検索します..."},
+                {
+                    "compliant": False,
+                    "details": violations,
+                    "summary": "旅費規程チェック: 不適合",
+                    "message": "プランを修正して再検索します...",
+                },
                 ensure_ascii=False,
             ),
         )
