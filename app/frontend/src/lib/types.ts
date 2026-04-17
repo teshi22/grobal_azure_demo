@@ -33,6 +33,17 @@ export interface PolicyResultData {
 
 export interface CompleteEvent {
   output: string;
+  request_id?: string;
+  plan?: Record<string, unknown>;
+  policy_display?: string;
+}
+
+/** 完了画面の構造化データ */
+export interface CompletionData {
+  output: string;
+  requestId?: string;
+  plan?: Record<string, unknown>;
+  policyDisplay?: string;
 }
 
 export interface ErrorEvent {
@@ -49,6 +60,7 @@ export interface ChatMessage {
   eventType?: SSEEventType;
   hitlData?: HITLRequestEvent;
   policyResult?: PolicyResultData;
+  completionData?: CompletionData;
   responded?: boolean;
 }
 

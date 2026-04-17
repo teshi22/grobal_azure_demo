@@ -7,6 +7,7 @@ BackgroundTasks から呼ばれ、ワークフローを実行し、
 import asyncio
 import json
 import logging
+import re
 import time
 import traceback
 from dataclasses import asdict
@@ -236,6 +237,19 @@ async def _run_policy_check_and_complete(
         await conv_store.update_status(conversation_id, "waiting_for_input")
 
 
+def _clean_agent_output(raw_text: str) -> str:
+    """Foundry Agent レスポンスから MCP ツール呼び出しのアーティファクトを除去する"""
+    # 「===== 出張申請書 =====」以降の本文を抽出
+    match = re.search(r"(={3,}\s*出張申請書\s*={3,}.*)", raw_text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    # フォールバック: MCPタグとツール応答を除去
+    cleaned = re.sub(r"<mcp_[^>]+>[^\n]*", "", raw_text)
+    cleaned = re.sub(r"【[^\n]*?json\s*\{[^}]*\}", "", cleaned)
+    return cleaned.strip()
+
+
 async def _run_submit_and_complete(
     plan_text: str,
     policy_display: str,
@@ -270,12 +284,29 @@ async def _run_submit_and_complete(
     )
     agent_text, _ = await asyncio.to_thread(node._call_agent, approval_input)
 
-    output = agent_text
+    # request_id を抽出
+    request_id = None
+    id_match = re.search(r'"request_id"\s*:\s*"([^"]+)"', agent_text)
+    if id_match:
+        request_id = id_match.group(1)
+
+    # プランデータをパース
+    try:
+        plan_data = json.loads(plan_text)
+    except (json.JSONDecodeError, TypeError):
+        plan_data = {}
+
+    output_data = {
+        "output": _clean_agent_output(agent_text),
+        "request_id": request_id,
+        "plan": plan_data,
+        "policy_display": policy_display,
+    }
 
     await event_store.append(
         conversation_id=conversation_id,
         event_type="complete",
-        data=json.dumps({"output": output}, ensure_ascii=False),
+        data=json.dumps(output_data, ensure_ascii=False),
     )
     await conv_store.update_status(conversation_id, "completed")
 

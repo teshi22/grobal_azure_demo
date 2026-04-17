@@ -8,6 +8,7 @@ import { RequestConfirmCard } from "./RequestConfirmCard";
 import { ClarificationForm } from "./ClarificationForm";
 import { SubmitConfirmCard } from "./SubmitConfirmCard";
 import { PolicyResultCard } from "./PolicyResultCard";
+import { CompletionCard } from "./CompletionCard";
 
 export function ChatWindow() {
   const { messages, isLoading, hitlRequest, send } = useChat();
@@ -33,6 +34,11 @@ export function ChatWindow() {
           // PolicyResult カード
           if (msg.policyResult) {
             return <PolicyResultCard key={msg.id} data={msg.policyResult} />;
+          }
+
+          // 完了カード
+          if (msg.completionData) {
+            return <CompletionCard key={msg.id} data={msg.completionData} />;
           }
 
           // HITL カードはメッセージ配列から描画

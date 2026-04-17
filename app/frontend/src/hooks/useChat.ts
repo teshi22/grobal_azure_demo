@@ -6,7 +6,7 @@ import {
   createEventSource,
   sendMessage,
 } from "@/lib/api";
-import type { ChatMessage, HITLRequestEvent, PolicyResultData } from "@/lib/types";
+import type { ChatMessage, HITLRequestEvent, PolicyResultData, CompletionData } from "@/lib/types";
 
 /** チャット状態管理フック — SSE 接続 + REST 応答 + 再接続 */
 export function useChat() {
@@ -82,12 +82,19 @@ export function useChat() {
 
       es.addEventListener("complete", (e) => {
         const data = JSON.parse(e.data);
+        const completion: CompletionData = {
+          output: data.output,
+          requestId: data.request_id,
+          plan: data.plan,
+          policyDisplay: data.policy_display,
+        };
         addMessage({
           id: `complete-${Date.now()}`,
           role: "assistant",
           content: data.output,
           timestamp: new Date(),
           eventType: "complete",
+          completionData: completion,
         });
         setIsLoading(false);
         setHitlRequest(null);
