@@ -32,6 +32,7 @@ from app.workflow.nodes.clarifier import (
     _extract_fields,
     _merge_fields,
 )
+from app.workflow.nodes.date_resolver import resolve_schedule
 from app.workflow.policy import evaluate_policy
 
 logger = logging.getLogger(__name__)
@@ -463,9 +464,16 @@ async def _run_clarification_direct(
         fields["departure"] = DEFAULT_DEPARTURE
         departure_is_default = True
 
+    # 日程の日付解決
+    schedule_question = resolve_schedule(fields)
+
     updated_input = f"{original_input}\n{user_input}" if original_input else user_input
 
-    complete, missing_labels, question = _check_completeness(fields)
+    if schedule_question:
+        # 日程があいまい → 具体日を質問
+        complete, missing_labels, question = False, ["日程"], schedule_question
+    else:
+        complete, missing_labels, question = _check_completeness(fields)
     logger.info(
         "Clarification direct: fields=%s, complete=%s, missing=%s, round=%d",
         fields, complete, missing_labels, clarification_round,

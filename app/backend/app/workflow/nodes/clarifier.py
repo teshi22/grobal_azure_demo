@@ -18,6 +18,7 @@ from app.workflow.models import (
     RequestConfirmHITLRequest,
     RequestConfirmHITLResponse,
 )
+from app.workflow.nodes.date_resolver import resolve_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -171,9 +172,24 @@ class RequestClarifierStep(Executor):
             fields["departure"] = DEFAULT_DEPARTURE
             departure_is_default = True
 
+        # 日程の日付解決（あいまい表現を具体日に変換）
+        schedule_question = resolve_schedule(fields)
+
         ctx.set_state("request_fields", fields)
         ctx.set_state("departure_is_default", departure_is_default)
         ctx.set_state("original_input", user_input)
+
+        if schedule_question:
+            # 日程があいまい → 具体的な日付を質問
+            logger.info("Schedule ambiguous, asking user: %s", schedule_question)
+            cr = ClarificationResult(
+                complete=False,
+                enriched_request="",
+                missing_fields=["日程"],
+                question=schedule_question,
+            )
+            await ctx.send_message(cr)
+            return
 
         complete, missing_labels, question = _check_completeness(fields)
 
