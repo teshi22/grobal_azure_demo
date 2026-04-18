@@ -27,3 +27,23 @@ app/backend/.venv/
 # MCP Tools
 mcp-tools/.python_packages/
 .env
+
+# Docs (slide/diagram drafts)
+docs/
+
+# Local editor settings
+.vscode/
+
+# Local export/build artifacts
+build/
+
+# Local screenshots and ad hoc test data
+completion-card-final.png
+completion-screen-fixed.png
+completion-screen-v2.png
+completion-screen-v3.png
+current-screen.png
+policy-check-display.png
+policy-violation-test.png
+results (2).jsonl
+tool_selection_test_data.jsonl
