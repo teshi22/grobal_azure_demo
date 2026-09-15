@@ -88,5 +88,9 @@ export interface TransportationLeg {
   method: string;
   from: string;
   to: string;
-  cost: number;
+  cost?: number | null;
+  direction?: string;
+  fareType?: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
 }

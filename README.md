@@ -1,359 +1,310 @@
-# AI 出張申請エージェント — Microsoft Foundry Demo
+# 出張申請マルチエージェント
 
-社員が「6/12 北海道大学」のように自然言語で伝えるだけで、情報の確認・補完から交通手段・宿泊の検索、社内規程チェック、申請書作成・送信までを一気通貫で処理するワークフロー型マルチエージェント Web アプリケーションです。
+自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進める Web アプリケーションです。
 
----
+エージェント処理は **Microsoft Agent Framework で定義した1つのワークフロー**として Microsoft Foundry Hosted Agent 上で実行します。Azure Container Apps 上の FastAPI は、認証、会話所有権、HITL（Human-in-the-Loop）、SSE 配信を受け持つ BFF です。
 
-## 技術スタック
+初めて触る場合は「構成」「処理の流れ」「Azure へデプロイする」まで読んでください。環境変数、テスト、運用上の注意は必要なときに参照できます。
+
+## 4つの専門エージェントを1つの Hosted Agent で動かす
 
 ```mermaid
 flowchart LR
-    User["👤 ユーザー"]
+    User["利用者"]
 
-    subgraph CAE["Container Apps Environment"]
-        subgraph App["Container App"]
-            FE["<b>Frontend</b><br/>Next.js 15 · React 19<br/>TypeScript · Tailwind CSS 4"]
-            BE["<b>Backend API</b><br/>FastAPI · Python<br/>Agent Framework"]
+    subgraph CA["Azure Container Apps"]
+        Web["Next.js<br/>静的フロントエンド"]
+        BFF["FastAPI BFF<br/>認証・所有権・SSE"]
+    end
+
+    subgraph Foundry["Microsoft Foundry"]
+        Host["Hosted Agent<br/>Responses protocol 2.0.0"]
+        subgraph AF["Agent Framework workflow"]
+            Clarifier["Request Clarifier"]
+            Planner["Travel Planner<br/>Web Search"]
+            Policy["Policy Checker"]
+            Writer["Approval Writer"]
         end
+        Model["GPT model deployment"]
     end
 
-    subgraph Foundry["Azure AI Foundry"]
-        subgraph Proj["Foundry Project"]
-            Model["<b>GPT-5.4</b><br/>GlobalStandard"]
-            AgentTP["Travel Planner<br/>Agent"]
-            AgentPC["Policy Checker<br/>Agent"]
-            AgentAA["Approval<br/>Agent"]
-        end
-        BingConn["Bing Search<br/>Connection"]
+    subgraph Function["Azure Functions"]
+        MCP["MCP<br/>submit_travel_request"]
     end
 
-    subgraph Func["Azure Functions"]
-        MCP["<b>MCP Server</b><br/>submit_travel_request"]
-    end
+    Cosmos[("Azure Cosmos DB<br/>会話・HITL・イベント<br/>チェックポイント・申請")]
+    Insights["Application Insights"]
 
-    Cosmos[("Cosmos DB<br/>会話 · チェックポイント<br/>· イベント")]
-    ACR["Container<br/>Registry"]
-    AppIns["Application Insights"]
-
-    User -->|HTTPS| FE
-    FE -->|"REST · SSE (HITL)"| BE
-    BE -->|Azure AI SDK| Proj
-    AgentTP & AgentPC & AgentAA -.->|推論| Model
-    AgentAA -->|MCP Protocol| MCP
-    MCP -->|azure-cosmos SDK| Cosmos
-    BE -->|azure-cosmos SDK| Cosmos
-    Proj -.->|Grounding| BingConn
-    BE -.->|OpenTelemetry| AppIns
-    ACR -.->|Image Pull| App
-
-    classDef boundary fill:none,stroke:#0078D4,stroke-width:2px,color:#0078D4
-    classDef resource fill:#E8F4FD,stroke:#0078D4,stroke-width:1px,color:#1A1A1A
-    classDef data fill:#E8F4FD,stroke:#0078D4,stroke-width:1px,color:#1A1A1A
-    classDef user fill:#FFF3E0,stroke:#F57C00,stroke-width:2px,color:#1A1A1A
-
-    class CAE,Foundry,Func boundary
-    class Proj boundary
-    class FE,BE,Model,AgentTP,AgentPC,AgentAA,MCP,BingConn,ACR,AppIns resource
-    class Cosmos data
-    class User user
+    User --> Web
+    Web -->|"REST / SSE"| BFF
+    BFF -->|"Responses API"| Host
+    Host --> AF
+    Clarifier & Planner & Policy & Writer --> Model
+    Planner -->|"GA Web Search"| Model
+    Writer --> MCP
+    BFF --> Cosmos
+    Host --> Cosmos
+    MCP --> Cosmos
+    BFF & Host --> Insights
 ```
 
-| レイヤー | 技術 | 備考 |
+| コンポーネント | 実装 | 主な責務 |
 |---|---|---|
-| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS 4 | 静的エクスポート → FastAPI で配信 |
-| Backend | FastAPI, Python, Agent Framework | SSE でリアルタイム HITL |
-| AI Agent | Azure AI Foundry, GPT-5.4 | 3 Foundry Agent によるワークフロー |
-| MCP Tools | Azure Functions, MCP Protocol (JSON-RPC) | 申請登録ツール |
-| Data | Cosmos DB | パーティション: `user_id` / `conversation_id` |
-| Observability | Application Insights, OpenTelemetry | FastAPI 計装 |
-| Infra | Container Apps, Container Registry, Bicep (IaC) | Managed Identity + RBAC |
+| Frontend | Next.js 15、React 19 | チャット、確認画面、申請一覧 |
+| BFF | FastAPI | Entra ID 認証、会話所有権、Hosted Agent 呼び出し、durable SSE |
+| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4エージェントのオーケストレーションと HITL |
+| MCP | Azure Functions | 承認済み申請の冪等な登録 |
+| Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認 grant、申請 |
+| Observability | OpenTelemetry、Application Insights | BFF と Hosted Agent のトレース |
+| Infrastructure | Bicep、Azure Developer CLI | Japan East への一括デプロイと RBAC 設定 |
 
----
+Hosted Agent 内の名前はチェックポイントとの互換性に関わるため、運用開始後は変更しないでください。
 
-## エージェント構成
+| 種別 | 固定値 |
+|---|---|
+| Hosted Agent | `travel-request-agent` |
+| Workflow | `travel-request-workflow` |
+| Agents | `request-clarifier`、`travel-planner`、`policy-checker`、`approval-document-writer` |
 
-**3 つの Foundry Agent + カスタム Executor ノード** によるワークフロー構成です。
-
-| # | ノード名 | 種別 | 役割 |
-|---|---------|------|------|
-| 0 | **Request Clarifier** | カスタム Executor (HITL) | リクエスト情報の確認・補完（不足時はユーザーに質問） |
-| 1 | **Travel Planner Agent** | Foundry Agent + Bing Grounding | 交通手段・宿泊先を検索・提案（構造化 JSON 出力） |
-| 2 | **Policy Checker** | Foundry Agent + FunctionTool | 社内旅費規程との適合判定（決定論的ルール） |
-| 3 | **Approval Agent** | Foundry Agent + MCP Tool | 出張申請書を作成し、MCP 経由で申請システムへ送信 |
-
-### Travel Planner の構造化出力
-
-```json
-{
-  "trip_type": "日帰り / 宿泊",
-  "transportation_legs": [
-    {"method": "新幹線のぞみ 普通車指定席", "from": "東京", "to": "新大阪", "cost": 14720},
-    {"method": "新幹線のぞみ 普通車指定席", "from": "新大阪", "to": "東京", "cost": 14720}
-  ],
-  "transportation_cost": 29440,
-  "hotel": "東横INN 大阪本町",
-  "hotel_cost_per_night": 8500,
-  "hotel_nights": 1,
-  "schedule": "4/5 前泊 → 4/6 訪問 → 当日帰京",
-  "total_cost": 40440,
-  "distance_km": 515,
-  "travel_time_hours": 2.5
-}
-```
-
----
-
-## 業務プロセスフロー
-
-```mermaid
-flowchart LR
-    Start([🧑 出張リクエスト]) --> Clarify["📝 情報の\n確認・補完"]
-    Clarify --> InfoCheck{情報は十分?}
-    InfoCheck -->|不足| AskUser["💬 追加情報\nを確認"] --> Clarify
-    InfoCheck -->|十分| Search["🔍 交通・宿泊\nの検索"]
-    Search --> Review{プラン確認}
-    Review -->|変更| Search
-    Review -->|OK| PolicyCheck["📑 旅費規程\nチェック"]
-    PolicyCheck --> Compliant{規程に適合?}
-    Compliant -->|NG| Reject["❌ 差し戻し"]
-    Compliant -->|OK| CreateDoc["📄 申請書作成"] --> Submit["📤 送信"] --> Done([✅ 申請完了])
-
-    style Start fill:#FFF3E0,stroke:#F57C00,color:#1A1A1A
-    style Done fill:#E8F5E9,stroke:#388E3C,color:#1A1A1A
-    style Reject fill:#FFEBEE,stroke:#D32F2F,color:#1A1A1A
-    style AskUser fill:#E3F2FD,stroke:#1565C0,color:#1A1A1A
-```
-
----
-
-## ワークフロー図（実装）
+## 申請は4回の確認を挟み、安全に再開できる
 
 ```mermaid
 flowchart TD
-    Start([🧑 社員：自然言語で出張リクエスト]) --> MsgToStr
-
-    subgraph Workflow["Agent Framework ワークフロー"]
-
-        subgraph ClarifyLoop["Step 0 — 情報確認"]
-            MsgToStr["MessageToStr"]
-            Clarifier["🤖 Request Clarifier\n(情報確認・補完)"]
-            ClarifyQ{情報は十分?}
-            UserInput["💬 ユーザーに質問\n(HITL)"]
-            ClarifyDirect["ClarificationDirect\n(ラウンド上限到達)"]
-        end
-
-        subgraph PlanLoop["Step 1 — 旅程検索・レビュー"]
-            TravelPlanner["🔍 Travel Planner Agent\n(Foundry + Bing Grounding)"]
-            PlanConfirm["📋 PlanReview\n(HITL: プラン確認)"]
-        end
-
-        subgraph PolicyCheck["Step 2 — 規程チェック"]
-            ToPolicyInput["ToPolicyInput"]
-            PolicyChecker["📋 Policy Checker\n(Foundry + FunctionTool)"]
-            Decision{規程に適合?}
-        end
-
-        subgraph Submit["Step 3 — 申請"]
-            ToApproval["ToApprovalInput"]
-            ApprovalAgent["✅ Approval Agent\n(Foundry + MCP Tool)"]
-        end
-
-        Rejection["❌ 差し戻し通知"]
-
-        MsgToStr --> Clarifier
-        Clarifier --> ClarifyQ
-        ClarifyQ -->|十分| TravelPlanner
-        ClarifyQ -->|不足| UserInput -->|回答| Clarifier
-        UserInput -->|ラウンド上限| ClarifyDirect --> TravelPlanner
-        TravelPlanner --> PlanConfirm
-        PlanConfirm -->|変更要望| TravelPlanner
-        PlanConfirm -->|確定| ToPolicyInput
-        ToPolicyInput --> PolicyChecker --> Decision
-        Decision -->|OK| ToApproval --> ApprovalAgent
-        Decision -->|NG| Rejection
-    end
-
-    ApprovalAgent -->|MCP Protocol| Done([✅ 申請システムへ送信完了])
+    Start["出張依頼"] --> Clarify["依頼内容を構造化"]
+    Clarify --> Complete{"出発地・目的地・日程・目的が揃ったか"}
+    Complete -->|不足| Ask["不足情報を確認<br/>request_info"] --> Clarify
+    Complete -->|揃った| Confirm["依頼内容を確認<br/>request_info"]
+    Confirm --> Plan["Web Search で旅程を作成"]
+    Plan --> Review["旅程をレビュー<br/>request_info"]
+    Review -->|修正| Plan
+    Review -->|承認| Rules["決定論的な旅費規程判定"]
+    Rules --> Compliant{"規程に適合したか"}
+    Compliant -->|不適合| Replan["違反理由を反映"] --> Plan
+    Compliant -->|適合| Document["申請書を作成"]
+    Document --> SubmitConfirm["送信を最終確認<br/>request_info"]
+    SubmitConfirm -->|取消| Cancel["送信せず終了"]
+    SubmitConfirm -->|承認| Grant["短命な approval grant を発行"]
+    Grant --> MCP["MCP で冪等に登録"]
+    MCP --> Done["申請完了"]
 ```
 
----
+HITL は Agent Framework の `request_info` を使います。BFF は `call_id`、`request_id`、直前の Responses ID を Cosmos DB に保存し、ブラウザから届いた回答を `function_call_output` に変換して同じ会話を再開します。
 
-## プロジェクト構成
+受け付けたメッセージも会話ドキュメントに保存し、BFF レプリカが lease を取得して処理します。レプリカが途中で停止した場合は、lease の期限後に別レプリカが残作業を引き継ぎます。
 
-```
+Hosted Agent のチェックポイントも Cosmos DB に保存します。プロセス再起動後に再開できる一方、最後のチェックポイント以降が再実行される可能性があるため、MCP の書き込みは冪等化しています。
+
+## 認証情報と所有権をBFFから副作用まで引き継ぐ
+
+Container Apps の Easy Auth が利用者を Microsoft Entra ID で認証します。FastAPI は `x-ms-client-principal` または署名済み Bearer JWT を検証し、認証済みユーザーの object ID を会話所有者として保存します。
+
+BFF は所有者が一致する場合だけ、会話の取得、HITL 回答、SSE 接続、申請一覧取得を許可します。リクエスト本文の `user_id` は信頼しません。
+
+送信承認後は、BFF が次の情報を持つ短命な approval grant を発行します。
+
+- 会話 ID と認証済みユーザー ID
+- 承認した旅程の SHA-256 ハッシュ
+- 冪等性キー
+- 有効期限
+
+MCP は grant の状態、有効期限、会話 ID、旅程ハッシュを再検証します。申請 ID は冪等性キーから決定的に生成し、Cosmos DB の conditional create と ETag 更新で同時実行時の重複登録を防ぎます。
+
+## リポジトリはBFF、Hosted Agent、MCPを分離している
+
+```text
 .
 ├── app/
-│   ├── Dockerfile                  # マルチステージ (Node + Python)
-│   ├── frontend/                   # Next.js 15 (静的エクスポート)
-│   │   └── src/
-│   └── backend/                    # FastAPI + Agent Framework
-│       └── app/
-│           ├── main.py             # エントリーポイント + 静的ファイル配信
-│           ├── routers/            # conversations, stream (SSE), travel_requests
-│           ├── services/           # cosmos, foundry, mcp_client
-│           └── workflow/
-│               ├── builder.py      # WorkflowBuilder グラフ定義
-│               ├── nodes/          # clarifier, travel_planner, plan_review, submit
-│               └── policy.py       # 旅費規程ルールエンジン
-├── mcp-tools/                      # Azure Functions MCP Server
-│   ├── function_app.py             # MCP JSON-RPC エンドポイント
-│   └── tools/                      # submit_travel_request, cosmos_client
-├── infra/                          # Bicep IaC
-│   ├── main.bicep                  # オーケストレーション
-│   └── modules/                    # ai-account, ai-project, cosmos-db, container-apps, ...
+│   ├── Dockerfile
+│   ├── frontend/                       # Next.js UI
+│   └── backend/
+│       ├── app/
+│       │   ├── auth/entra.py           # Easy Auth / Bearer JWT 検証
+│       │   ├── routers/                # conversations、stream、travel_requests
+│       │   └── services/               # Hosted Agent、Foundry、Cosmos
+│       └── tests/
+├── hosted-agent/
+│   ├── main.py                         # ResponsesHostServer エントリーポイント
+│   ├── Dockerfile                      # Hosted Agent、port 8088
+│   ├── travel_agent/
+│   │   ├── agents.py                   # 4エージェント
+│   │   ├── workflow.py                 # Agent Framework グラフ
+│   │   ├── executors.py                # HITL、規程判定、MCP 実行
+│   │   └── checkpoints.py              # Cosmos チェックポイント
+│   └── tests/
+├── mcp-tools/
+│   ├── function_app.py                 # MCP JSON-RPC エンドポイント
+│   ├── tools/submit_travel_request.py  # grant 検証と冪等登録
+│   └── tests/
+├── infra/
+│   ├── main.bicep
+│   └── modules/
 ├── scripts/
-│   └── build_agents.py             # Foundry Agent ビルドスクリプト
-├── deploy.sh                       # ワンショットデプロイスクリプト
-├── docker-compose.yml              # ローカル開発 (Cosmos エミュレータ付き)
-└── .env.sample                     # 環境変数テンプレート
+│   ├── configure-hosted-agent.sh       # Hosted Agent MI の RBAC と Easy Auth
+│   └── smoke-hosted-agent.py
+├── azure.yaml                          # Foundry Hosted Agent デプロイ定義
+├── deploy.sh                           # ローカル端末からの一括デプロイ
+└── .github/workflows/deploy.yml        # GitHub Actions
 ```
 
----
+## Azure へデプロイする
 
-## 実行方法
+### 前提を揃える
 
-### 前提条件
+- Azure CLI
+- Azure Developer CLI（`azd`）
+- Python 3.11
+- `jq` と `zip`
+- Azure サブスクリプションでリソースとロール割り当てを作成できる権限
+- Microsoft Foundry Hosted Agent を利用できるサブスクリプション
+- Agent Framework が対応する GPT モデルデプロイ
 
-- Python 3.13+, Node.js 22+
-- Azure CLI (`az login` 済み)
-- Docker (ローカル開発時)
+すべての Azure リソースは既定で `japaneast` に作成します。既存の Foundry アカウントは別リージョンへ移せません。旧構成から切り替える場合は、新しいリソースグループへのデプロイを推奨します。
 
-### Azure インフラデプロイ
+Cosmos DB のパーティションキーも変更できません。旧コンテナーが異なるキーを使っている場合は、新規コンテナーへの移行または再作成が必要です。
+
+### 手元から一括デプロイする
 
 ```bash
-# 1. Bicep でインフラ一式をデプロイ（.env が自動生成される）
+az login
+az account set --subscription <subscription-id>
 bash deploy.sh
-
-# 2. Foundry Agent をビルド
-python scripts/build_agents.py
 ```
 
-### ローカル開発
+`deploy.sh` は次の順に処理します。
+
+1. BFF と MCP 用の Entra ID アプリ登録を作成または再利用する
+2. Bicep で Foundry、Cosmos DB、Functions、Container Apps を構築する
+3. MCP Functions と BFF コンテナーをデプロイする
+4. `azd` で Hosted Agent をデプロイする
+5. Hosted Agent の Managed Identity に Foundry、Cosmos DB、MCP の権限を設定する
+6. BFF の health check と Hosted Agent の `request_info` を確認する
+
+必要に応じて環境変数でデプロイ先を上書きできます。
 
 ```bash
-# Cosmos DB エミュレータ + アプリを起動
-docker compose up
-
-# または個別に起動
-cd app/frontend && npm install && npm run dev    # http://localhost:3000
-cd app/backend  && pip install -r requirements.txt && uvicorn app.main:app --reload  # http://localhost:8000
+AZURE_SUBSCRIPTION_ID=<subscription-id> \
+RESOURCE_GROUP=rg-travel-agent-prod \
+LOCATION=japaneast \
+AZURE_ENV_NAME=travel-agent-prod \
+MODEL_DEPLOYMENT_NAME=gpt-5.4 \
+bash deploy.sh
 ```
 
-### 本番デプロイ (Container Apps)
+既存のアプリ登録を使う場合は、`MCP_ENTRA_CLIENT_ID` と `WEB_ENTRA_CLIENT_ID` も指定してください。スクリプトはデプロイ結果をもとに、ルート、`app/backend`、`hosted-agent` の `.env` を生成します。
+
+### GitHub Actions から継続デプロイする
+
+`.github/workflows/deploy.yml` は `main` への push または手動実行で、インフラからスモークテストまで進めます。
+
+OIDC 用の GitHub Secrets:
+
+| Secret | 内容 |
+|---|---|
+| `AZURE_CLIENT_ID` | GitHub OIDC で使うサービスプリンシパルの client ID |
+| `AZURE_TENANT_ID` | Entra tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | デプロイ先 subscription ID |
+| `MCP_ENTRA_CLIENT_ID` | MCP Functions を表す Entra アプリの client ID |
+| `WEB_ENTRA_CLIENT_ID` | Container Apps Easy Auth 用 Entra アプリの client ID |
+
+任意の GitHub Variables:
+
+| Variable | 既定値 |
+|---|---|
+| `AZURE_ENV_NAME` | `travel-agent-prod` |
+| `AZURE_RESOURCE_GROUP` | `rg-travel-agent-hosted-demo` |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `gpt-5.4` |
+| `AZURE_AI_MODEL_CAPACITY` | `20`（20K TPM） |
+
+GitHub OIDC のサービスプリンシパルには、リソース作成と RBAC 割り当てに加え、BFF 用アプリ登録の redirect URI を更新できる Microsoft Graph 権限または所有権が必要です。
+
+## ローカルでは各プロセスを分けて確認する
+
+依存関係をまとめて入れる場合:
 
 ```bash
-# ACR にイメージをビルド & プッシュ
-az acr build --registry <YOUR_ACR> --platform linux/amd64 \
-  --image travel-agent:latest ./app
-
-# Container App を更新
-az containerapp update --name <APP_NAME> \
-  --resource-group <RG> \
-  --image <ACR>.azurecr.io/travel-agent:latest
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+cp .env.sample app/backend/.env
+cp hosted-agent/.env.example hosted-agent/.env
 ```
 
-### 環境変数
+Windows PowerShell では有効化コマンドを `.venv\Scripts\Activate.ps1` に読み替えてください。
 
-`.env.sample` を `.env` にコピーして設定してください（`deploy.sh` 使用時は自動生成されます）。
+ローカル BFF は Entra 設定が空の場合だけ `dev-user` を使います。BFF の接続先は `app/backend/.env`、Hosted Agent の接続先は `hosted-agent/.env` に設定してください。
 
-```
-AZURE_AI_PROJECT_ENDPOINT=https://<account>.services.ai.azure.com/api/projects/<project>
-AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5.4
-BING_CONNECTION_NAME=<account>-bing-grounding
-MCP_TOOL_ENDPOINT=https://<function-app>.azurewebsites.net/api/mcp
-MCP_FUNCTION_APP_CLIENT_ID=<entra-app-client-id>
-APPLICATIONINSIGHTS_CONNECTION_STRING=<connection-string>
-```
+```bash
+# BFF
+cd app/backend
+uvicorn app.main:app --reload --port 8000
 
----
+# Frontend
+cd app/frontend
+npm ci
+npm run dev
 
-## デモの流れ
-
-### Step 1: 環境紹介
-- Foundry ポータルでプロジェクト構成・エージェント一覧を紹介
-- Web UI を開き、アーキテクチャを説明
-
-### Step 2: 出張リクエスト & 情報確認
-- Web UI から「6/12 北海道大学」のように簡潔に入力
-- Request Clarifier が情報を整理し、不足があればチャットで質問
-
-### Step 3: 旅程提案 & プラン確認
-- Travel Planner が Bing Grounding で交通手段・宿泊先を検索
-- **構造化出力** でプランを提示 → ユーザーが HITL で確認・変更要望
-
-### Step 4: 規程チェック
-- Policy Checker が旅費規程をチェック（例: 「宿泊費 ¥8,500 ≤ 上限 ¥12,000 → ✅」）
-- **条件分岐エッジ** で OK/NG を自動ルーティング
-
-### Step 5: 申請送信
-- Approval Agent が申請書を作成し、MCP 経由で申請システムへ送信
-
----
-
-## サンプルデータ
-
-### 入力例（自然言語）
-
-**日帰り出張**
-```
-6/12 北海道大学
+# Hosted Agent のローカル起動
+cd hosted-agent
+python main.py
 ```
 
-**宿泊出張**
+Hosted Agent のローカル起動ではインメモリチェックポイントを使います。Foundry 上では `COSMOS_ENDPOINT` が設定されるため、Cosmos DB の永続チェックポイントに切り替わります。
+
+## 変更前に3つのテスト群とFrontendを確認する
+
+```bash
+python -m pytest hosted-agent/tests app/backend/tests mcp-tools/tests
+
+cd app/frontend
+npm ci
+npm run build
+
+cd ../..
+az bicep build --file infra/main.bicep
+azd show
 ```
-東京から来週の月曜日（4/5）〜火曜日（4/6）に大阪のお客様先（本町駅周辺）を訪問したいです。
-目的は新規案件の提案です。
+
+Hosted Agent のスモークテストは、デプロイ後の Responses API を直接呼び、最初の確認要求が `request_info` として返ることを検証します。
+
+```bash
+python scripts/smoke-hosted-agent.py \
+  --project-endpoint "https://<account>.services.ai.azure.com/api/projects/<project>" \
+  --agent-name travel-request-agent
 ```
 
-### 社内旅費規程
+## Cosmos DB のコンテナーとキーを固定する
 
-| 項目 | 規程内容 |
-|------|---------|
-| 宿泊費上限 | ¥12,000/泊 |
-| 交通手段 | 新幹線普通車・指定席を原則とする |
-| グリーン車 | 乗車時間 3 時間超の場合に限り可 |
-| 航空機利用 | 片道 600km 以上、または新幹線より安価な場合に可 |
-| 前泊 | 始業時刻に間に合わない場合に認められる |
-| 日当 | 国内: ¥2,500 / 海外: ¥5,000 |
+| コンテナー | パーティションキー | 用途 |
+|---|---|---|
+| `workflow-checkpoints` | `/workflow_name` | Agent Framework のチェックポイント |
+| `conversation-events` | `/conversation_id` | durable SSE イベント |
+| `conversations` | `/id` | 所有者、Responses ID、pending HITL |
+| `approval-grants` | `/id` | 送信承認の短命 grant |
+| `travel-requests` | `/request_id` | 冪等に登録した申請 |
 
----
+`workflow-checkpoints` は30日で削除します。`approval-grants` はコンテナー側で TTL を有効にし、各アイテムには発行時の短い TTL を設定します。
 
-## 使用する Azure サービス一覧
+## 運用で見る場所を分ける
 
-| サービス | 用途 |
-|---------|------|
-| Azure AI Foundry (AI Services) | エージェントホスティング・GPT-5.4 モデルデプロイ |
-| Bing Search (Grounding) | Travel Planner の検索バックエンド |
-| Azure Container Apps | Frontend + Backend の統合ホスティング |
-| Azure Container Registry | コンテナイメージ管理 |
-| Azure Cosmos DB | 会話メタデータ・チェックポイント・イベント永続化 |
-| Azure Functions | MCP Server（申請登録ツール） |
-| Application Insights | OpenTelemetry トレース・監視 |
-| Microsoft Entra ID | 認証・認可（Managed Identity + RBAC） |
+- **Application Insights**: Foundry Hosted Agent のサーバー側トレースと、BFF / Functions の警告・エラー
+- **Foundry**: Hosted Agent のデプロイ状態、Responses 実行、トレース、モデル利用状況
+- **Cosmos DB**: pending HITL、イベント再生、grant の消費状態、申請の重複有無
+- **Container Apps / Functions**: Easy Auth、Managed Identity、revision と実行ログ
 
----
+Foundry プロジェクトは Project Managed Identity を使って Application Insights に接続します。プロジェクトの Managed Identity にはトレースの送信・参照に必要なロールを割り当てます。Hosted Agentの再デプロイ後はホスティング基盤がGenAIトレースを自動送信します。プロンプト本文の記録、OpenTelemetryのログ、メトリクス、SDK統計は有効化せず、取り込み量を抑えます。
 
-## エンタープライズ設計のポイント
+Foundryでは、HITLの確認・修正・承認を応答ターンごとのトレースとして記録します。BFFは同じ会話IDを`agent_session_id`として引き継ぐため、Foundryの「セッションビュー」から1回の申請に含まれるトレースをまとめて確認できます。
 
-### Agent Framework
-- **グラフベースのワークフロー**: `WorkflowBuilder` で処理フローを宣言的に定義
-- **AI + ルールの融合**: AI Agent と決定論的ロジック（旅費規程）を同一グラフに統合
-- **型安全**: Pydantic 構造化出力でエージェント間のデータ受け渡しが堅牢
-- **条件分岐エッジ**: ビジネスルールに基づく自動ルーティング
+`scripts/configure-hosted-agent.sh` は Hosted Agent のデプロイ後に実行します。Agent には Application Insights の `Monitoring Metrics Publisher`、Cosmos DB Built-in Data Contributor、Functions Easy Auth の `allowedApplications` を設定します。BFF には `Foundry Agent Consumer` と、`x-ms-user-identity` に必要な最小権限のカスタムロールを割り当てます。
 
-### Human-in-the-Loop
-- **SSE + REST**: リアルタイム双方向通信でプランレビュー・情報確認をブラウザ上で実現
-- **ワークフローチェックポイント**: Cosmos DB に状態を永続化し、HITL 中断・再開に対応
+## 用語
 
-### ガバナンス & セキュリティ
-- **Managed Identity + RBAC**: Container Apps / Functions にシステム割り当て ID、Cosmos DB データ投稿者ロール
-- **Entra ID EasyAuth**: MCP Functions への認証付きアクセス
-- Policy Checker による**自動コンプライアンスチェック**
+| 用語 | このリポジトリでの意味 |
+|---|---|
+| BFF | Browser からの API 呼び出しを受け、認証とバックエンド連携を集約する FastAPI |
+| Hosted Agent | Foundry がコンテナーを管理し、Responses API として公開する Agent Framework アプリ |
+| HITL | 依頼内容、旅程、送信を利用者が確認してから処理を再開する仕組み |
+| approval grant | BFF が送信承認時だけ発行し、MCP が副作用の直前に検証する短命な許可情報 |
+| durable SSE | イベントをメモリではなく Cosmos DB に保存し、切断後も `Last-Event-ID` から再送する方式 |
 
-### 可観測性
-- **OpenTelemetry** ベースで全エージェントの処理フローをトレース
-- Application Insights でレイテンシ・コストをモニタリング
-
-### 拡張性
-- エージェント追加で機能拡張が容易（例: 経費精算エージェント、海外出張対応エージェント）
-- **MCP プロトコル** で外部システム（経費精算・勤怠等）と疎結合に連携
+実装上の問題や改善案は、このリポジトリの GitHub Issues に登録してください。

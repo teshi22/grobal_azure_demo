@@ -14,13 +14,11 @@ export interface MessageResult {
   status: string;
 }
 
-export async function createConversation(
-  userId: string,
-): Promise<Conversation> {
+export async function createConversation(): Promise<Conversation> {
   const res = await fetch(`${API_BASE}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
+    body: JSON.stringify({}),
   });
   if (!res.ok) throw new Error(`Failed to create conversation: ${res.status}`);
   return res.json();
@@ -35,7 +33,7 @@ export async function sendMessage(
     "Content-Type": "application/json",
   };
   if (idempotencyKey) {
-    headers["X-Idempotency-Key"] = idempotencyKey;
+    headers["Idempotency-Key"] = idempotencyKey;
   }
   const res = await fetch(
     `${API_BASE}/conversations/${conversationId}/messages`,
@@ -53,7 +51,12 @@ export function createEventSource(
   conversationId: string,
   lastEventId?: string,
 ): EventSource {
-  const url = `${API_BASE}/conversations/${conversationId}/stream`;
+  const params = new URLSearchParams();
+  if (lastEventId) {
+    params.set("last_event_id", lastEventId);
+  }
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const url = `${API_BASE}/conversations/${conversationId}/stream${query}`;
   const es = new EventSource(url);
   return es;
 }

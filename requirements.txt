@@ -1,4 +1,1 @@
-# scripts/ 用の依存 (build_agents.py)
-azure-ai-projects>=2.0.0b4
-azure-identity>=1.19.0
-python-dotenv>=1.0.0
+-r requirements-dev.txt

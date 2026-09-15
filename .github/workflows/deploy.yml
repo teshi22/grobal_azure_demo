@@ -1,4 +1,4 @@
-name: Deploy Travel Agent App
+name: Deploy Travel Request Agent
 
 on:
   push:
@@ -10,88 +10,291 @@ permissions:
   contents: read
 
 env:
-  RESOURCE_GROUP: rg-travel-agent-demo
-  ACR_NAME: travelacribsh
-  ACR_LOGIN_SERVER: travelacribsh.azurecr.io
-  CONTAINER_APP_NAME: travelenvibsh-app
-  FUNCTION_APP_NAME: travelfuncibsh
-  FUNC_STORAGE_ACCOUNT: travelfsibsh
+  AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME || 'travel-agent-prod' }}
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-travel-agent-hosted-demo' }}
+  LOCATION: japaneast
   IMAGE_NAME: travel-agent-app
+  HOSTED_AGENT_NAME: travel-request-agent
+  MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
+  MODEL_CAPACITY: ${{ vars.AZURE_AI_MODEL_CAPACITY || '20' }}
+  MCP_ENTRA_CLIENT_ID: ${{ secrets.MCP_ENTRA_CLIENT_ID }}
+  WEB_ENTRA_CLIENT_ID: ${{ secrets.WEB_ENTRA_CLIENT_ID }}
 
 jobs:
-  # ===========================================================================
-  # Job 1: アプリのビルド & Container Apps デプロイ
-  # ===========================================================================
-  build-and-deploy-app:
+  deploy:
     runs-on: ubuntu-latest
+    environment: production
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Azure Login (OIDC)
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${MCP_ENTRA_CLIENT_ID:?Set the MCP_ENTRA_CLIENT_ID repository secret.}"
+          : "${WEB_ENTRA_CLIENT_ID:?Set the WEB_ENTRA_CLIENT_ID repository secret.}"
+
+      - name: Azure login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: ACR Login
-        run: az acr login --name ${{ env.ACR_NAME }}
+      - name: Set up Azure Developer CLI
+        uses: Azure/setup-azd@v2
 
-      - name: Docker Build & Push
+      - name: Install Foundry azd extensions
+        shell: bash
         run: |
-          IMAGE_TAG="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          IMAGE_LATEST="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest"
-          docker build -t "$IMAGE_TAG" -t "$IMAGE_LATEST" ./app
-          docker push "$IMAGE_TAG"
-          docker push "$IMAGE_LATEST"
+          set -euo pipefail
+          azd extension install azure.ai.projects
+          azd extension install azure.ai.agents
 
-      - name: Update Container App
+      - name: Deploy Azure infrastructure
+        shell: bash
         run: |
-          az containerapp update \
-            --name ${{ env.CONTAINER_APP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          set -euo pipefail
+          az group create \
+            --name "$RESOURCE_GROUP" \
+            --location "$LOCATION" \
+            --output none
 
-  # ===========================================================================
-  # Job 2: MCP Functions デプロイ
-  # ===========================================================================
-  deploy-mcp-functions:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          az deployment group create \
+            --name "travel-agent-${GITHUB_RUN_ID}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              location="$LOCATION" \
+              modelName="$MODEL_DEPLOYMENT_NAME" \
+              modelCapacity="$MODEL_CAPACITY" \
+              mcpEntraClientId="$MCP_ENTRA_CLIENT_ID" \
+              webEntraClientId="$WEB_ENTRA_CLIENT_ID" \
+            --query properties.outputs \
+            --output json > deployment-outputs.json
 
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          {
+            echo "PROJECT_ENDPOINT=$(jq -r '.projectEndpoint.value' deployment-outputs.json)"
+            echo "AZURE_AI_PROJECT_ENDPOINT=$(jq -r '.projectEndpoint.value' deployment-outputs.json)"
+            echo "PROJECT_NAME=$(jq -r '.projectName.value' deployment-outputs.json)"
+            echo "FOUNDRY_ACCOUNT_NAME=$(jq -r '.accountName.value' deployment-outputs.json)"
+            echo "FOUNDRY_ACCOUNT_RESOURCE_ID=$(jq -r '.accountResourceId.value' deployment-outputs.json)"
+            echo "FOUNDRY_PROJECT_RESOURCE_ID=$(jq -r '.projectResourceId.value' deployment-outputs.json)"
+            echo "COSMOS_ENDPOINT=$(jq -r '.cosmosEndpoint.value' deployment-outputs.json)"
+            echo "COSMOS_ACCOUNT_NAME=$(jq -r '.cosmosAccountName.value' deployment-outputs.json)"
+            echo "COSMOS_DATABASE=$(jq -r '.cosmosDatabaseName.value' deployment-outputs.json)"
+            echo "APPLICATIONINSIGHTS_CONNECTION_STRING=$(jq -r '.appInsightsConnectionString.value' deployment-outputs.json)"
+            echo "APP_INSIGHTS_RESOURCE_ID=$(jq -r '.appInsightsResourceId.value' deployment-outputs.json)"
+            echo "ACR_NAME=$(jq -r '.acrName.value' deployment-outputs.json)"
+            echo "ACR_LOGIN_SERVER=$(jq -r '.acrLoginServer.value' deployment-outputs.json)"
+            echo "ACR_RESOURCE_ID=$(az acr show --name "$(jq -r '.acrName.value' deployment-outputs.json)" --resource-group "$RESOURCE_GROUP" --query id --output tsv)"
+            echo "APP_URL=$(jq -r '.appUrl.value' deployment-outputs.json)"
+            echo "MCP_TOOL_ENDPOINT=$(jq -r '.mcpEndpoint.value' deployment-outputs.json)"
+            echo "FUNCTION_APP_NAME=$(jq -r '.functionAppName.value' deployment-outputs.json)"
+            echo "FUNCTION_STORAGE_ACCOUNT=$(jq -r '.funcStorageAccountName.value' deployment-outputs.json)"
+            echo "CONTAINER_APP_NAME=$(jq -r '.appName.value' deployment-outputs.json)"
+          } >> "$GITHUB_ENV"
 
-      - name: Setup Python
+      - name: Register Easy Auth callback
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_url=$(jq -r '.appUrl.value' deployment-outputs.json)
+          for client_id in "$MCP_ENTRA_CLIENT_ID" "$WEB_ENTRA_CLIENT_ID"; do
+            if [[ -z "$(az ad sp list \
+              --filter "appId eq '${client_id}'" \
+              --query '[0].id' \
+              --output tsv)" ]]; then
+              az ad sp create --id "$client_id" --output none
+            fi
+          done
+          az ad app update \
+            --id "$WEB_ENTRA_CLIENT_ID" \
+            --web-redirect-uris "${app_url}/.auth/login/aad/callback" \
+            --enable-id-token-issuance true \
+            --output none
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Build MCP Functions Package
+      - name: Build MCP Functions package
+        shell: bash
         run: |
-          DEPLOY_DIR="/tmp/mcp-deploy"
-          mkdir -p "$DEPLOY_DIR"
-          cp -r mcp-tools/function_app.py mcp-tools/host.json mcp-tools/tools "$DEPLOY_DIR/"
-          pip install --quiet -r mcp-tools/requirements.txt \
-            --target "$DEPLOY_DIR/.python_packages/lib/site-packages" \
-            --platform manylinux2014_x86_64 --python-version 3.11 \
-            --implementation cp --abi cp311 --only-binary=:all:
-          (cd "$DEPLOY_DIR" && zip -qr /tmp/mcp-deploy.zip .)
+          set -euo pipefail
+          deploy_dir="$RUNNER_TEMP/mcp-deploy"
+          mkdir -p "$deploy_dir"
+          cp mcp-tools/function_app.py mcp-tools/host.json "$deploy_dir/"
+          cp -R mcp-tools/tools "$deploy_dir/"
+          python -m pip install \
+            --quiet \
+            --requirement mcp-tools/requirements.txt \
+            --target "$deploy_dir/.python_packages/lib/site-packages"
+          (cd "$deploy_dir" && zip -qr "$RUNNER_TEMP/mcp-deploy.zip" .)
 
-      - name: Upload to Storage & Restart
+      - name: Deploy MCP Functions package
+        shell: bash
+        env:
+          DEPLOY_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
-          az storage blob upload \
-            --account-name ${{ env.FUNC_STORAGE_ACCOUNT }} \
-            --container-name function-releases \
-            --file /tmp/mcp-deploy.zip \
-            --name mcp-deploy.zip \
-            --overwrite --auth-mode login --output none
+          set -euo pipefail
+          storage_id=$(az storage account show \
+            --name "$FUNCTION_STORAGE_ACCOUNT" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query id \
+            --output tsv)
+          acr_id=$(az acr show \
+            --name "$ACR_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query id \
+            --output tsv)
+          deploy_principal_id=$(az ad sp show \
+            --id "$DEPLOY_CLIENT_ID" \
+            --query id \
+            --output tsv)
+          if [[ -z "$(az role assignment list \
+            --assignee-object-id "$deploy_principal_id" \
+            --role "Foundry Project Manager" \
+            --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
+            --query '[0].id' \
+            --output tsv)" ]]; then
+            az role assignment create \
+              --assignee-object-id "$deploy_principal_id" \
+              --assignee-principal-type ServicePrincipal \
+              --role "Foundry Project Manager" \
+              --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
+              --output none
+          fi
+          if [[ -z "$(az role assignment list \
+            --assignee-object-id "$deploy_principal_id" \
+            --role "Storage Blob Data Contributor" \
+            --scope "$storage_id" \
+            --query '[0].id' \
+            --output tsv)" ]]; then
+            az role assignment create \
+              --assignee-object-id "$deploy_principal_id" \
+              --assignee-principal-type ServicePrincipal \
+              --role "Storage Blob Data Contributor" \
+              --scope "$storage_id" \
+              --output none
+          fi
+          if [[ -z "$(az role assignment list \
+            --assignee-object-id "$deploy_principal_id" \
+            --role "AcrPush" \
+            --scope "$acr_id" \
+            --query '[0].id' \
+            --output tsv)" ]]; then
+            az role assignment create \
+              --assignee-object-id "$deploy_principal_id" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPush" \
+              --scope "$acr_id" \
+              --output none
+          fi
+
+          for attempt in {1..12}; do
+            if az storage blob upload \
+              --account-name "$FUNCTION_STORAGE_ACCOUNT" \
+              --container-name function-releases \
+              --file "$RUNNER_TEMP/mcp-deploy.zip" \
+              --name mcp-deploy.zip \
+              --overwrite \
+              --auth-mode login \
+              --output none; then
+              break
+            fi
+            if [[ "$attempt" -eq 12 ]]; then
+              echo "Storage RBAC did not become effective in time." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
           az functionapp restart \
-            --name ${{ env.FUNCTION_APP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
             --output none
+
+      - name: Build and deploy BFF container
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_tag="${IMAGE_NAME}:${GITHUB_SHA}"
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$image_tag" \
+            --file app/Dockerfile \
+            app \
+            --output none
+          az containerapp registry set \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --server "$ACR_LOGIN_SERVER" \
+            --identity system \
+            --output none
+          az containerapp ingress update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --target-port 8000 \
+            --output none
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "${ACR_LOGIN_SERVER}/${image_tag}" \
+            --output none
+
+      - name: Configure azd environment
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --tenant-id "$AZURE_TENANT_ID" \
+            --federated-credential-provider github
+          azd env new "$AZURE_ENV_NAME" --no-prompt
+          azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID"
+          azd env set AZURE_RESOURCE_GROUP "$RESOURCE_GROUP"
+          azd env set AZURE_LOCATION "$LOCATION"
+          azd env set AZURE_AI_PROJECT_NAME "$PROJECT_NAME"
+          azd env set AZURE_AI_PROJECT_ID "$FOUNDRY_PROJECT_RESOURCE_ID"
+          azd env set AZURE_AI_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
+          azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_LOGIN_SERVER"
+          azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$ACR_RESOURCE_ID"
+          azd env set FOUNDRY_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
+          azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_DEPLOYMENT_NAME"
+          azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
+          azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
+          azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
+          azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"
+          azd env set COSMOS_CHECKPOINT_CONTAINER "workflow-checkpoints"
+
+      - name: Deploy Foundry Hosted Agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          azd deploy "$HOSTED_AGENT_NAME" --no-prompt
+
+      - name: Configure Hosted Agent access
+        shell: bash
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          bash scripts/configure-hosted-agent.sh
+
+      - name: Smoke test deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 12 --retry-delay 10 \
+            "$APP_URL/health"
+          python -m pip install --quiet azure-ai-projects azure-identity
+          python scripts/smoke-hosted-agent.py \
+            --project-endpoint "$PROJECT_ENDPOINT" \
+            --agent-name "$HOSTED_AGENT_NAME"

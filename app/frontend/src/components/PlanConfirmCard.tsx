@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  formatTransportationCost,
+  normalizeTransportationLegs,
+} from "@/lib/travel";
+import type { TransportationLeg } from "@/lib/types";
+
 interface Props {
   data: Record<string, unknown>;
   disabled?: boolean;
@@ -7,17 +13,15 @@ interface Props {
   onRevise: (feedback: string) => void;
 }
 
-interface TransportLeg {
-  method: string;
-  from: string;
-  to: string;
-  cost: number;
-}
-
-function splitLegs(legs: TransportLeg[]): {
-  outbound: TransportLeg[];
-  returnTrip: TransportLeg[];
+function splitLegs(legs: TransportationLeg[]): {
+  outbound: TransportationLeg[];
+  returnTrip: TransportationLeg[];
 } {
+  const outbound = legs.filter((leg) => leg.direction?.includes("往"));
+  const returnTrip = legs.filter((leg) => leg.direction?.includes("復"));
+  if (outbound.length + returnTrip.length === legs.length) {
+    return { outbound, returnTrip };
+  }
   if (legs.length < 2) return { outbound: legs, returnTrip: [] };
   const mid = Math.ceil(legs.length / 2);
   return { outbound: legs.slice(0, mid), returnTrip: legs.slice(mid) };
@@ -29,10 +33,13 @@ function LegTable({
   startIndex,
 }: {
   label: string;
-  legs: TransportLeg[];
+  legs: TransportationLeg[];
   startIndex: number;
 }) {
-  const subtotal = legs.reduce((s, l) => s + (l.cost ?? 0), 0);
+  const costs = legs.flatMap((leg) =>
+    typeof leg.cost === "number" ? [leg.cost] : [],
+  );
+  const subtotal = costs.reduce((sum, cost) => sum + cost, 0);
   return (
     <div>
       <p className="mb-1 text-xs font-semibold text-gray-500">{label}</p>
@@ -49,12 +56,27 @@ function LegTable({
           {legs.map((leg, i) => (
             <tr key={i} className="border-b border-gray-100">
               <td className="py-1 pr-2 text-gray-400">{startIndex + i + 1}</td>
-              <td className="py-1 pr-2">{leg.method}</td>
+              <td className="py-1 pr-2">
+                <div>{leg.method}</div>
+                {leg.fareType && (
+                  <div className="text-xs text-gray-500">{leg.fareType}</div>
+                )}
+                {leg.sourceUrl && (
+                  <a
+                    href={leg.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-blue-600 underline"
+                  >
+                    {leg.sourceTitle || "運賃の根拠"}
+                  </a>
+                )}
+              </td>
               <td className="py-1 pr-2 whitespace-nowrap">
                 {leg.from} → {leg.to}
               </td>
               <td className="py-1 text-right whitespace-nowrap">
-                ¥{leg.cost?.toLocaleString()}
+                {formatTransportationCost(leg.cost)}
               </td>
             </tr>
           ))}
@@ -65,7 +87,7 @@ function LegTable({
               小計
             </td>
             <td className="pt-1 text-right whitespace-nowrap">
-              ¥{subtotal.toLocaleString()}
+              {costs.length > 0 ? formatTransportationCost(subtotal) : "—"}
             </td>
           </tr>
         </tfoot>
@@ -76,7 +98,7 @@ function LegTable({
 
 export function PlanConfirmCard({ data, disabled, onConfirm, onRevise }: Props) {
   const plan = data as Record<string, unknown>;
-  const legs = (plan.transportation_legs as TransportLeg[]) || [];
+  const legs = normalizeTransportationLegs(plan.transportation_legs);
   const tripType = (plan.trip_type as string) || "宿泊";
   const { outbound, returnTrip } = splitLegs(legs);
 
@@ -96,6 +118,12 @@ export function PlanConfirmCard({ data, disabled, onConfirm, onRevise }: Props) 
         {typeof plan.schedule === "string" && (
           <span>
             <span className="font-medium">日程:</span> {plan.schedule}
+          </span>
+        )}
+        {typeof plan.fare_basis === "string" && (
+          <span>
+            <span className="font-medium">運賃基準:</span>{" "}
+            {plan.fare_basis}
           </span>
         )}
       </div>

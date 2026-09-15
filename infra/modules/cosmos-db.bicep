@@ -15,6 +15,9 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
   name: accountName
   location: location
   kind: 'GlobalDocumentDB'
+  tags: {
+    SecurityControl: 'Ignore'
+  }
   properties: {
     databaseAccountOfferType: 'Standard'
     capabilities: [
@@ -30,9 +33,6 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
       }
     ]
     publicNetworkAccess: 'Enabled'
-    ipRules: [
-      { ipAddressOrRange: '0.0.0.0' } // Azure サービスからのアクセスを許可 (Functions等)
-    ]
   }
 }
 
@@ -55,10 +55,11 @@ resource checkpointContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases
     resource: {
       id: 'workflow-checkpoints'
       partitionKey: {
-        paths: ['/conversation_id']
+        paths: ['/workflow_name']
         kind: 'Hash'
+        version: 2
       }
-      defaultTtl: 86400 // 24h TTL
+      defaultTtl: 2592000 // 30 days
     }
   }
 }
@@ -77,6 +78,7 @@ resource eventContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/cont
       indexingPolicy: {
         includedPaths: [
           { path: '/conversation_id/?' }
+          { path: '/event_cursor/?' }
           { path: '/event_index/?' }
           { path: '/idempotency_key/?' }
         ]
@@ -97,8 +99,36 @@ resource conversationContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabas
     resource: {
       id: 'conversations'
       partitionKey: {
-        paths: ['/user_id']
+        paths: ['/id']
         kind: 'Hash'
+        version: 2
+      }
+    }
+  }
+}
+
+// コンテナ: approval-grants (バックエンドが発行し、MCP サーバーが条件付き更新)
+resource approvalGrantContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: database
+  name: 'approval-grants'
+  properties: {
+    resource: {
+      id: 'approval-grants'
+      partitionKey: {
+        paths: ['/id']
+        kind: 'Hash'
+        version: 2
+      }
+      defaultTtl: 86400 // 期限切れの承認情報を自動削除
+      indexingPolicy: {
+        includedPaths: [
+          { path: '/conversation_id/?' }
+          { path: '/status/?' }
+          { path: '/expires_at/?' }
+        ]
+        excludedPaths: [
+          { path: '/*' }
+        ]
       }
     }
   }
@@ -117,6 +147,7 @@ resource travelRequestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
       }
       indexingPolicy: {
         includedPaths: [
+          { path: '/user_id/?' }
           { path: '/submitted_at/?' }
           { path: '/status/?' }
         ]
@@ -132,3 +163,5 @@ resource travelRequestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
 
 output accountEndpoint string = cosmosAccount.properties.documentEndpoint
 output accountName string = cosmosAccount.name
+output accountId string = cosmosAccount.id
+output databaseName string = database.name

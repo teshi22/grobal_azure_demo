@@ -9,15 +9,7 @@ class Settings(BaseSettings):
     # Azure AI Foundry
     azure_ai_project_endpoint: str
     azure_ai_model_deployment_name: str = "gpt-5.4"
-
-    # Foundry Agent 名
-    request_clarifier_agent: str = "RequestClarifier"
-    travel_planner_agent: str = "TravelPlanner"
-    policy_checker_agent: str = "PolicyChecker"
-    approval_agent: str = "ApprovalAgent"
-
-    # Bing 接続
-    bing_project_connection_id: str = ""
+    hosted_agent_name: str = "travel-request-agent"
 
     # Cosmos DB
     cosmos_endpoint: str = ""
@@ -26,10 +18,7 @@ class Settings(BaseSettings):
     cosmos_event_container: str = "conversation-events"
     cosmos_conversation_container: str = "conversations"
     cosmos_travel_request_container: str = "travel-requests"
-
-    # MCP ツール
-    mcp_tool_endpoint: str = ""
-    mcp_function_app_client_id: str = ""
+    cosmos_approval_grant_container: str = "approval-grants"
 
     # Application Insights
     applicationinsights_connection_string: str = ""
@@ -40,6 +29,7 @@ class Settings(BaseSettings):
     # Auth
     entra_tenant_id: str = ""
     entra_client_id: str = ""
+    entra_issuer: str = ""
 
     # Docs (本番では無効化推奨)
     enable_docs: bool = True

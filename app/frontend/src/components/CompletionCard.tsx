@@ -1,6 +1,10 @@
 "use client";
 
-import type { CompletionData, TransportationLeg } from "@/lib/types";
+import {
+  formatTransportationCost,
+  normalizeTransportationLegs,
+} from "@/lib/travel";
+import type { CompletionData } from "@/lib/types";
 
 interface Props {
   data: CompletionData;
@@ -8,7 +12,7 @@ interface Props {
 
 export function CompletionCard({ data }: Props) {
   const plan = data.plan || {};
-  const legs = (plan.transportation_legs as TransportationLeg[]) || [];
+  const legs = normalizeTransportationLegs(plan.transportation_legs);
   const tripType = (plan.trip_type as string) || "日帰り";
   const destination = plan.destination as string | undefined;
   const schedule = plan.schedule as string | undefined;
@@ -81,9 +85,14 @@ export function CompletionCard({ data }: Props) {
                       <span className="text-gray-500">
                         {leg.from} → {leg.to}
                       </span>
+                      {leg.fareType && (
+                        <span className="ml-1 text-xs text-gray-500">
+                          ({leg.fareType})
+                        </span>
+                      )}
                     </span>
                     <span className="font-medium whitespace-nowrap">
-                      ¥{leg.cost?.toLocaleString()}
+                      {formatTransportationCost(leg.cost)}
                     </span>
                   </div>
                 ))}

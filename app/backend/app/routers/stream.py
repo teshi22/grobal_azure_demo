@@ -1,91 +1,76 @@
-"""SSE ストリーミングエンドポイント
+"""Authenticated, durable SSE event streaming."""
 
-GET /api/conversations/{id}/stream — SSE でワークフローイベントを配信
-"""
+from __future__ import annotations
 
 import asyncio
-import logging
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.services.cosmos import get_event_bus, get_event_store
+from app.auth.entra import CurrentUser
+from app.services.cosmos import get_conversation_store, get_event_store
 
 router = APIRouter(tags=["stream"])
-logger = logging.getLogger(__name__)
 
-SSE_HEARTBEAT_INTERVAL = 15  # seconds
+_TERMINAL_EVENT_TYPES = frozenset({"hitl_request", "complete", "error"})
+_INITIAL_POLL_SECONDS = 1
+_MAX_POLL_SECONDS = 5
+_KEEP_ALIVE_SECONDS = 15
 
 
 @router.get("/conversations/{conversation_id}/stream")
 async def stream_events(
     conversation_id: str,
     request: Request,
-    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    current_user: CurrentUser,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    last_event_id_query: str | None = Query(default=None, alias="last_event_id"),
 ):
-    """SSE でワークフローイベントをストリーミング配信する
-
-    - インメモリ EventBus (asyncio.Queue) から即時配信
-    - Last-Event-ID 再接続時のみ Cosmos DB にフォールバック
-    """
-    event_store = get_event_store()
-    bus = get_event_bus()
+    conversation = await get_conversation_store().get_owned(
+        conversation_id,
+        current_user["sub"],
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
     async def event_generator():
-        last_index = int(last_event_id) if last_event_id else -1
-
-        # 初回接続・再接続: Cosmos から missed events を補完
-        missed = await event_store.get_events_after(
-            conversation_id, last_index
-        )
-        for event in missed:
-            event_index = event["event_index"]
-            last_index = event_index
-            yield (
-                f"id: {event_index}\n"
-                f"event: {event['event_type']}\n"
-                f"data: {event['data']}\n\n"
+        cursor = last_event_id or last_event_id_query or ""
+        poll_seconds = _INITIAL_POLL_SECONDS
+        seconds_since_keep_alive = 0
+        while not await request.is_disconnected():
+            rows = await get_event_store().get_events_after(
+                conversation_id,
+                cursor,
             )
-            if event["event_type"] in ("complete", "error"):
+            reached_terminal_event = False
+            for row in rows:
+                cursor = row["event_cursor"]
+                yield (
+                    f"id: {cursor}\n"
+                    f"event: {row['event_type']}\n"
+                    f"data: {row['data']}\n\n"
+                )
+                if row["event_type"] in _TERMINAL_EVENT_TYPES:
+                    reached_terminal_event = True
+            if reached_terminal_event:
                 return
 
-        # メイン配信: Queue から直接読む (Cosmos 読み取り不要)
-        q = bus.subscribe(conversation_id)
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-
-                try:
-                    event = await asyncio.wait_for(
-                        q.get(), timeout=SSE_HEARTBEAT_INTERVAL
-                    )
-                except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
-                    continue
-                except asyncio.CancelledError:
-                    break
-
-                event_index = event["event_index"]
-                event_type = event["event_type"]
-                data = event["data"]
-
-                yield (
-                    f"id: {event_index}\n"
-                    f"event: {event_type}\n"
-                    f"data: {data}\n\n"
-                )
-
-                if event_type in ("complete", "error"):
-                    return
-        finally:
-            bus.unsubscribe(conversation_id, q)
+            if rows:
+                poll_seconds = _INITIAL_POLL_SECONDS
+                seconds_since_keep_alive = 0
+            else:
+                seconds_since_keep_alive += poll_seconds
+                poll_seconds = min(poll_seconds * 2, _MAX_POLL_SECONDS)
+            if seconds_since_keep_alive >= _KEEP_ALIVE_SECONDS:
+                yield ": keep-alive\n\n"
+                seconds_since_keep_alive = 0
+            await asyncio.sleep(poll_seconds)
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },

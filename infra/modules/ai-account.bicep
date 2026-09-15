@@ -61,4 +61,4 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
 
 output accountName string = account.name
 output accountId string = account.id
-output endpoint string = account.properties.endpoint
+output endpoint string = 'https://${account.name}.services.ai.azure.com/'

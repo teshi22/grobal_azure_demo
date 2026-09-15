@@ -1,0 +1,4 @@
+-r hosted-agent/requirements.txt
+-r app/backend/requirements.txt
+-r mcp-tools/requirements.txt
+pytest>=8.3.0

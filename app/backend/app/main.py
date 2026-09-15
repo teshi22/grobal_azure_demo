@@ -1,10 +1,12 @@
 """出張申請エージェント — FastAPI バックエンド + 静的ファイル配信"""
 
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
+from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
@@ -13,11 +15,15 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.routers import conversations, stream, travel_requests
 
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
+logging.getLogger("app").setLevel(logging.WARNING)
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("opentelemetry").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
-
-# アプリ全体のログレベルを INFO に設定
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/app/static"))
 
 
@@ -25,43 +31,66 @@ STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/app/static"))
 async def lifespan(app: FastAPI):
     """アプリケーション起動/終了時の処理"""
     logger.info("Starting travel-agent backend...")
-    from app.services.cosmos import get_cosmos_client
+    from app.services.cosmos import (
+        close_cosmos_client,
+        get_conversation_store,
+        get_cosmos_client,
+    )
 
     app.state.cosmos_client = get_cosmos_client()
     logger.info("Cosmos DB client initialized")
 
-    # Pre-warm: Cosmos 接続 + Azure AD トークン取得
-    try:
-        from app.services.cosmos import get_conversation_store
-        store = get_conversation_store()
-        await store._container.read_item("__warmup__", partition_key="__warmup__")
-    except Exception:
-        pass  # ドキュメントが無くてもOK、接続が確立されれば良い
+    store = get_conversation_store()
+    await store.get("__warmup__")
     logger.info("Cosmos DB connection pre-warmed")
 
-    # Pre-warm: Foundry OpenAI クライアント初期化
-    try:
-        from app.services.foundry import get_openai_client
-        get_openai_client()
-        logger.info("OpenAI client pre-warmed")
-    except Exception as e:
-        logger.warning("OpenAI client pre-warm failed: %s", e)
+    from app.services.foundry import get_hosted_responses_client
+    get_hosted_responses_client()
+    logger.info("Hosted Agent Responses client pre-warmed")
 
-    yield
-    if hasattr(app.state, "cosmos_client") and app.state.cosmos_client:
-        await app.state.cosmos_client.close()
+    from app.services.hosted_agent import recover_pending_messages
+
+    recovery_task = asyncio.create_task(
+        recover_pending_messages(),
+        name="conversation-recovery",
+    )
+    try:
+        yield
+    finally:
+        recovery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await recovery_task
+    await close_cosmos_client()
     logger.info("Shutdown complete")
 
 
 app = FastAPI(
     title="Travel Request Agent API",
-    description="AI 出張申請エージェント — Agent Framework + Foundry Agent",
+    description="AI 出張申請エージェント — Foundry Hosted Agent BFF",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/api/docs" if settings.enable_docs else None,
     redoc_url="/api/redoc" if settings.enable_docs else None,
     openapi_url="/api/openapi.json" if settings.enable_docs else None,
 )
+
+if settings.applicationinsights_connection_string:
+    os.environ["OTEL_TRACES_EXPORTER"] = "none"
+    os.environ["OTEL_METRICS_EXPORTER"] = "none"
+    configure_azure_monitor(
+        connection_string=settings.applicationinsights_connection_string,
+        logger_name="app",
+        disable_offline_storage=True,
+        enable_live_metrics=False,
+        enable_performance_counters=False,
+        instrumentation_options={
+            "azure_sdk": {"enabled": False},
+            "fastapi": {"enabled": False},
+            "requests": {"enabled": False},
+            "urllib": {"enabled": False},
+            "urllib3": {"enabled": False},
+        },
+    )
 
 # CORS: ローカル開発用 (本番では同一オリジンのため不要)
 if settings.cors_origins:

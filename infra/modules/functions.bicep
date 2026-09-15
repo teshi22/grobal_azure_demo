@@ -153,9 +153,13 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
+var functionEndpoint = 'https://${functionApp.properties.defaultHostName}'
+
 output functionAppName string = functionApp.name
+output functionAppId string = functionApp.id
 output functionAppHostName string = functionApp.properties.defaultHostName
-output mcpEndpoint string = 'https://${functionApp.properties.defaultHostName}/api/mcp'
+output functionEndpoint string = functionEndpoint
+output mcpEndpoint string = '${functionEndpoint}/api/mcp'
 output principalId string = functionApp.identity.principalId
 output storageAccountName string = storage.name
 
@@ -176,7 +180,7 @@ resource functionAuthSettings 'Microsoft.Web/sites/config@2023-12-01' = if (mcpE
         enabled: true
         registration: {
           clientId: mcpEntraClientId
-          openIdIssuer: 'https://sts.windows.net/${entraTenantId}/v2.0'
+          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
         }
         validation: {
           allowedAudiences: [

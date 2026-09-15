@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+requiredVersions:
+  azd: ">=1.27.1"
+  extensions:
+    azure.ai.agents: ">=1.0.0-beta.8"
+    azure.ai.projects: ">=1.0.0-beta.4"
+
+name: travel-request-agent
+
+services:
+  ai-project:
+    host: azure.ai.project
+    endpoint: ${AZURE_AI_PROJECT_ENDPOINT}
+
+  travel-request-agent:
+    host: azure.ai.agent
+    project: hosted-agent
+    language: docker
+    uses:
+      - ai-project
+    kind: hosted
+    name: travel-request-agent
+    description: Agent Framework workflow for authenticated travel requests.
+    protocols:
+      - protocol: responses
+        version: 2.0.0
+    env:
+      AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      COSMOS_ENDPOINT: ${COSMOS_ENDPOINT}
+      COSMOS_DATABASE_NAME: ${COSMOS_DATABASE_NAME}
+      COSMOS_CHECKPOINT_CONTAINER: ${COSMOS_CHECKPOINT_CONTAINER}
+      MCP_TOOL_ENDPOINT: ${MCP_TOOL_ENDPOINT}
+      MCP_FUNCTION_APP_CLIENT_ID: ${MCP_FUNCTION_APP_CLIENT_ID}
+      AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING: "true"
+      APPLICATIONINSIGHTS_SDKSTATS_DISABLED: "true"
+      APPLICATIONINSIGHTS_STATSBEAT_DISABLED_ALL: "true"
+      OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: azure_app_service
+      OTEL_LOGS_EXPORTER: "none"
+      OTEL_METRICS_EXPORTER: "none"
+    startupCommand: python main.py
+    container:
+      resources:
+        cpu: "1.0"
+        memory: 2Gi

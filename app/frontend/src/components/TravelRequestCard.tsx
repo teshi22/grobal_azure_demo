@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  formatTransportationCost,
+  normalizeTransportationLegs,
+} from "@/lib/travel";
 import type { TravelRequest } from "@/lib/types";
 
 interface Props {
@@ -7,6 +11,9 @@ interface Props {
 }
 
 export function TravelRequestCard({ request }: Props) {
+  const transportationLegs = normalizeTransportationLegs(
+    request.transportation_legs,
+  );
   const statusColor =
     request.status === "submitted"
       ? "bg-green-100 text-green-800"
@@ -39,13 +46,27 @@ export function TravelRequestCard({ request }: Props) {
       </div>
 
       {/* 交通手段 */}
-      {request.transportation_legs?.length > 0 && (
+      {transportationLegs.length > 0 && (
         <div className="mb-3 rounded bg-gray-50 p-3 text-sm">
           <p className="mb-1 font-medium">🚄 交通手段</p>
-          {request.transportation_legs.map((leg, i) => (
+          {transportationLegs.map((leg, i) => (
             <p key={i} className="ml-2 text-gray-600">
-              {i + 1}. {leg.method} {leg.from} → {leg.to} ¥
-              {(leg.cost ?? 0).toLocaleString()}
+              {i + 1}. {leg.method} {leg.from} → {leg.to}{" "}
+              {formatTransportationCost(leg.cost)}
+              {leg.fareType && `（${leg.fareType}）`}
+              {leg.sourceUrl && (
+                <>
+                  {" "}
+                  <a
+                    href={leg.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 underline"
+                  >
+                    根拠
+                  </a>
+                </>
+              )}
             </p>
           ))}
           <p className="mt-1 font-medium">

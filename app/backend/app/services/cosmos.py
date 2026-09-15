@@ -1,135 +1,207 @@
-"""Cosmos DB クライアント + ストアサービス
-
-- ConversationStore: 会話メタデータ CRUD
-- EventStore: SSE イベントログ (追記 + Change Feed 読み取り)
-- EventNotifier: インメモリ SSE 即時通知
-- CosmosCheckpointRepository: Agent Framework CheckpointRepository 実装
-"""
+"""Cosmos DB stores used by the authenticated BFF."""
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from azure.core import MatchConditions
 from azure.cosmos.aio import CosmosClient, ContainerProxy
+from azure.cosmos.exceptions import (
+    CosmosHttpResponseError,
+    CosmosResourceNotFoundError,
+)
 from azure.identity.aio import DefaultAzureCredential
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# EventBus — SSE 接続にイベントを即時配信するインメモリ pub/sub
-# ---------------------------------------------------------------------------
-class EventBus:
-    """per-conversation asyncio.Queue ベースのイベントバス。
-
-    - subscribe() で Queue を取得、SSE ループが読む
-    - publish() で全 subscriber に即座に配信
-    - Cosmos 読み取りを SSE クリティカルパスから排除
-    """
-
-    def __init__(self):
-        self._subscribers: dict[str, list[asyncio.Queue]] = {}
-
-    def subscribe(self, conversation_id: str) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        self._subscribers.setdefault(conversation_id, []).append(q)
-        return q
-
-    def unsubscribe(self, conversation_id: str, q: asyncio.Queue) -> None:
-        subs = self._subscribers.get(conversation_id)
-        if subs:
-            try:
-                subs.remove(q)
-            except ValueError:
-                pass
-            if not subs:
-                del self._subscribers[conversation_id]
-
-    def publish(self, conversation_id: str, event: dict) -> None:
-        for q in self._subscribers.get(conversation_id, []):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-
-
-_event_bus = EventBus()
-
-
-def get_event_bus() -> EventBus:
-    return _event_bus
-
 _cosmos_client: CosmosClient | None = None
+_credential: DefaultAzureCredential | None = None
 _conversation_store: ConversationStore | None = None
 _event_store: EventStore | None = None
+_travel_request_store: TravelRequestStore | None = None
+_approval_grant_store: ApprovalGrantStore | None = None
 
 
-def get_cosmos_client() -> CosmosClient | None:
-    global _cosmos_client
+def get_cosmos_client() -> CosmosClient:
+    global _cosmos_client, _credential
     if not settings.cosmos_endpoint:
-        logger.warning("COSMOS_ENDPOINT not set — Cosmos DB disabled")
-        return None
+        raise RuntimeError("COSMOS_ENDPOINT is required")
     if _cosmos_client is None:
-        credential = DefaultAzureCredential()
-        _cosmos_client = CosmosClient(settings.cosmos_endpoint, credential=credential)
+        _credential = DefaultAzureCredential()
+        _cosmos_client = CosmosClient(
+            settings.cosmos_endpoint,
+            credential=_credential,
+        )
     return _cosmos_client
 
 
+async def close_cosmos_client() -> None:
+    global _cosmos_client, _credential
+    if _cosmos_client is not None:
+        await _cosmos_client.close()
+        _cosmos_client = None
+    if _credential is not None:
+        await _credential.close()
+        _credential = None
+
+
 def _get_container(container_name: str) -> ContainerProxy:
-    client = get_cosmos_client()
-    db = client.get_database_client(settings.cosmos_database)
-    return db.get_container_client(container_name)
+    database = get_cosmos_client().get_database_client(settings.cosmos_database)
+    return database.get_container_client(container_name)
 
 
-# ---------------------------------------------------------------------------
-# ConversationStore
-# ---------------------------------------------------------------------------
 class ConversationStore:
-    """会話メタデータの CRUD"""
+    """Conversation ownership and Hosted Agent continuation state."""
 
     def __init__(self):
         self._container = _get_container(settings.cosmos_conversation_container)
 
     async def create(self, conversation_id: str, user_id: str) -> dict:
-        doc = {
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
             "id": conversation_id,
             "user_id": user_id,
             "status": "created",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "foundry_response_id": None,
+            "pending_request": None,
+            "created_at": now,
+            "updated_at": now,
         }
-        await self._container.create_item(doc)
-        return doc
+        await self._container.create_item(item)
+        return item
 
     async def get(self, conversation_id: str) -> dict | None:
-        query = "SELECT * FROM c WHERE c.id = @id"
-        params = [{"name": "@id", "value": conversation_id}]
-        items = [
-            item
-            async for item in self._container.query_items(
-                query, parameters=params, max_item_count=1
+        try:
+            return await self._container.read_item(
+                item=conversation_id,
+                partition_key=conversation_id,
             )
-        ]
-        return items[0] if items else None
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def get_owned(self, conversation_id: str, user_id: str) -> dict | None:
+        item = await self.get(conversation_id)
+        if not item or item.get("user_id") != user_id:
+            return None
+        return item
+
+    async def update(self, conversation_id: str, **changes: Any) -> dict:
+        item = await self.get(conversation_id)
+        if not item:
+            raise LookupError(f"Conversation {conversation_id} not found")
+        item.update(changes)
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return await self._container.replace_item(
+            item=conversation_id,
+            body=item,
+            etag=item.get("_etag"),
+            match_condition=MatchConditions.IfNotModified,
+        )
 
     async def update_status(self, conversation_id: str, status: str) -> None:
-        conv = await self.get(conversation_id)
-        if conv:
-            conv["status"] = status
-            conv["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._container.upsert_item(conv)
+        await self.update(conversation_id, status=status)
 
-    async def update_status_direct(self, conv: dict, status: str) -> None:
-        """既に取得済みの conv doc のステータスを更新 (再 get 不要)"""
-        conv["status"] = status
-        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
-        await self._container.upsert_item(conv)
+    async def claim_message(
+        self,
+        conversation_id: str,
+        idempotency_key: str,
+        *,
+        message_id: str,
+        user_id: str,
+        content: str,
+    ) -> bool:
+        item = await self.get(conversation_id)
+        if not item:
+            return False
+        if item.get("last_idempotency_key") == idempotency_key:
+            return False
+        if item.get("status") == "processing" and item.get("active_message"):
+            return False
+        item["last_idempotency_key"] = idempotency_key
+        item["status"] = "processing"
+        item["active_message"] = {
+            "message_id": message_id,
+            "user_id": user_id,
+            "content": content,
+            "idempotency_key": idempotency_key,
+        }
+        item["processing_lease_until"] = None
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            await self._container.replace_item(
+                item=conversation_id,
+                body=item,
+                etag=item.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code == 412:
+                return False
+            raise
+        return True
+
+    async def claim_pending_message(
+        self,
+        conversation_id: str,
+        *,
+        lease_minutes: int = 10,
+    ) -> dict[str, str] | None:
+        item = await self.get(conversation_id)
+        if not item or item.get("status") != "processing":
+            return None
+        active_message = item.get("active_message")
+        if not isinstance(active_message, dict):
+            return None
+
+        now = datetime.now(timezone.utc)
+        lease_until = item.get("processing_lease_until")
+        if lease_until:
+            try:
+                if datetime.fromisoformat(lease_until) > now:
+                    return None
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid processing lease for %s",
+                    conversation_id,
+                )
+
+        item["processing_lease_until"] = (
+            now + timedelta(minutes=lease_minutes)
+        ).isoformat()
+        item["updated_at"] = now.isoformat()
+        try:
+            await self._container.replace_item(
+                item=conversation_id,
+                body=item,
+                etag=item.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code == 412:
+                return None
+            raise
+        return {
+            "message_id": str(active_message["message_id"]),
+            "user_id": str(active_message["user_id"]),
+            "content": str(active_message["content"]),
+            "idempotency_key": str(active_message["idempotency_key"]),
+        }
+
+    async def list_pending_conversation_ids(self) -> list[str]:
+        query = (
+            "SELECT VALUE c.id FROM c "
+            "WHERE c.status = 'processing' "
+            "AND IS_DEFINED(c.active_message)"
+        )
+        return [str(item) async for item in self._container.query_items(query=query)]
 
 
 def get_conversation_store() -> ConversationStore:
@@ -139,18 +211,11 @@ def get_conversation_store() -> ConversationStore:
     return _conversation_store
 
 
-# ---------------------------------------------------------------------------
-# EventStore
-# ---------------------------------------------------------------------------
 class EventStore:
-    """SSE イベントログの追記・読み取り
-
-    各イベントは conversation_id でパーティション、event_index で順序付け。
-    """
+    """Durable, replayable SSE event log partitioned by conversation."""
 
     def __init__(self):
         self._container = _get_container(settings.cosmos_event_container)
-        self._counters: dict[str, int] = {}
 
     async def append(
         self,
@@ -159,86 +224,66 @@ class EventStore:
         data: dict[str, Any] | str,
         message_id: str | None = None,
         idempotency_key: str | None = None,
-    ) -> int:
-        """イベントを追記し、event_index を返す"""
-        # インメモリカウンターで MAX クエリを省略
-        if conversation_id in self._counters:
-            event_index = self._counters[conversation_id] + 1
-        else:
-            query = (
-                "SELECT VALUE MAX(c.event_index) FROM c "
-                "WHERE c.conversation_id = @cid"
-            )
-            params = [{"name": "@cid", "value": conversation_id}]
-            results = [
-                item
-                async for item in self._container.query_items(query, parameters=params)
-            ]
-            max_index = results[0] if results and results[0] is not None else -1
-            event_index = max_index + 1
-
-        self._counters[conversation_id] = event_index
-
-        data_str = json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else data
-
-        doc = {
-            "id": f"{conversation_id}_{event_index}",
+    ) -> str:
+        event_cursor = f"{time.time_ns():020d}-{uuid.uuid4().hex}"
+        serialized = (
+            json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else data
+        )
+        item = {
+            "id": str(uuid.uuid4()),
             "conversation_id": conversation_id,
-            "event_index": event_index,
+            "event_cursor": event_cursor,
             "event_type": event_type,
-            "data": data_str,
+            "data": serialized,
             "message_id": message_id,
             "idempotency_key": idempotency_key,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        await self._container.create_item(doc)
-
-        # SSE subscriber に即時配信
-        _event_bus.publish(conversation_id, {
-            "event_index": event_index,
-            "event_type": event_type,
-            "data": data_str,
-        })
-
-        return event_index
+        await self._container.create_item(item)
+        return event_cursor
 
     async def get_events_after(
-        self, conversation_id: str, after_index: int = -1
+        self,
+        conversation_id: str,
+        after_cursor: str = "",
     ) -> list[dict]:
-        """指定インデックス以降のイベントを取得"""
         query = (
-            "SELECT * FROM c "
-            "WHERE c.conversation_id = @cid AND c.event_index > @idx "
-            "ORDER BY c.event_index"
+            "SELECT * FROM c WHERE c.conversation_id = @conversation_id "
+            "AND c.event_cursor > @event_cursor ORDER BY c.event_cursor"
         )
-        params = [
-            {"name": "@cid", "value": conversation_id},
-            {"name": "@idx", "value": after_index},
+        parameters = [
+            {"name": "@conversation_id", "value": conversation_id},
+            {"name": "@event_cursor", "value": after_cursor},
         ]
         return [
             item
-            async for item in self._container.query_items(query, parameters=params)
+            async for item in self._container.query_items(
+                query=query,
+                parameters=parameters,
+                partition_key=conversation_id,
+            )
         ]
 
     async def get_by_idempotency_key(
-        self, conversation_id: str, idempotency_key: str
+        self,
+        conversation_id: str,
+        idempotency_key: str,
     ) -> dict | None:
-        """冪等性キーで既存イベントを検索"""
         query = (
-            "SELECT * FROM c "
-            "WHERE c.conversation_id = @cid AND c.idempotency_key = @key"
+            "SELECT TOP 1 * FROM c WHERE c.conversation_id = @conversation_id "
+            "AND c.idempotency_key = @idempotency_key"
         )
-        params = [
-            {"name": "@cid", "value": conversation_id},
-            {"name": "@key", "value": idempotency_key},
+        parameters = [
+            {"name": "@conversation_id", "value": conversation_id},
+            {"name": "@idempotency_key", "value": idempotency_key},
         ]
-        items = [
-            item
-            async for item in self._container.query_items(
-                query, parameters=params, max_item_count=1
-            )
-        ]
-        return items[0] if items else None
+        async for item in self._container.query_items(
+            query=query,
+            parameters=parameters,
+            partition_key=conversation_id,
+        ):
+            return item
+        return None
 
 
 def get_event_store() -> EventStore:
@@ -248,39 +293,38 @@ def get_event_store() -> EventStore:
     return _event_store
 
 
-# ---------------------------------------------------------------------------
-# TravelRequestStore — 出張申請データの読み取り
-# ---------------------------------------------------------------------------
 class TravelRequestStore:
-    """MCP サーバーが書き込んだ出張申請データを読み取る"""
+    """Read travel requests written by the MCP submission service."""
 
     def __init__(self):
         self._container = _get_container(settings.cosmos_travel_request_container)
 
-    async def list_all(self, limit: int = 50) -> list[dict]:
-        """全申請を新しい順に取得"""
+    async def list_by_user(self, user_id: str, limit: int = 50) -> list[dict]:
         query = (
-            "SELECT * FROM c ORDER BY c.submitted_at DESC OFFSET 0 LIMIT @limit"
+            "SELECT TOP @limit * FROM c WHERE c.user_id = @user_id "
+            "ORDER BY c.submitted_at DESC"
         )
-        params: list[dict] = [{"name": "@limit", "value": limit}]
-        items: list[dict] = []
-        async for item in self._container.query_items(
-            query, parameters=params,
-        ):
-            items.append(item)
-        return items
-
-    async def get(self, request_id: str) -> dict | None:
-        """request_id で申請を取得 (point read)"""
-        try:
-            return await self._container.read_item(
-                request_id, partition_key=request_id,
+        parameters = [
+            {"name": "@limit", "value": limit},
+            {"name": "@user_id", "value": user_id},
+        ]
+        return [
+            item
+            async for item in self._container.query_items(
+                query=query,
+                parameters=parameters,
             )
-        except Exception:
+        ]
+
+    async def get_owned(self, request_id: str, user_id: str) -> dict | None:
+        try:
+            item = await self._container.read_item(
+                item=request_id,
+                partition_key=request_id,
+            )
+        except CosmosResourceNotFoundError:
             return None
-
-
-_travel_request_store: TravelRequestStore | None = None
+        return item if item.get("user_id") == user_id else None
 
 
 def get_travel_request_store() -> TravelRequestStore:
@@ -290,118 +334,53 @@ def get_travel_request_store() -> TravelRequestStore:
     return _travel_request_store
 
 
-# ---------------------------------------------------------------------------
-# CosmosCheckpointRepository (Agent Framework インターフェース実装)
-# ---------------------------------------------------------------------------
-class CosmosCheckpointRepository:
-    """Agent Framework の CheckpointStorage プロトコルを Cosmos DB で実装する。
-
-    WorkflowCheckpoint を JSON シリアライズして Cosmos DB に保存。
-    checkpoint_id を conversation_id として partition key に使用。
-    """
+class ApprovalGrantStore:
+    """Short-lived grants issued after an authenticated HITL approval."""
 
     def __init__(self):
-        self._container = _get_container(settings.cosmos_checkpoint_container)
+        self._container = _get_container(settings.cosmos_approval_grant_container)
 
-    async def save(self, checkpoint) -> str:
-        """WorkflowCheckpoint を保存し checkpoint_id を返す"""
-        import dataclasses
-
-        doc = dataclasses.asdict(checkpoint)
-        doc["id"] = checkpoint.checkpoint_id
-        doc["conversation_id"] = checkpoint.checkpoint_id
-        # Complex objects need safe JSON serialization
-        doc["pending_request_info_events"] = json.loads(
-            json.dumps(doc["pending_request_info_events"], default=str)
-        )
-        doc["messages"] = json.loads(
-            json.dumps(doc["messages"], default=str)
-        )
-        doc["state"] = json.loads(
-            json.dumps(doc["state"], default=str)
-        )
-        logger.info(
-            f"Saving checkpoint: id={checkpoint.checkpoint_id}, "
-            f"workflow={checkpoint.workflow_name}"
-        )
-        await self._container.upsert_item(doc)
-        return checkpoint.checkpoint_id
-
-    async def load(self, checkpoint_id: str):
-        """checkpoint_id でチェックポイントを取得"""
-        logger.info(f"Loading checkpoint: id={checkpoint_id}")
+    async def issue(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        call_id: str,
+        plan_hash: str,
+        ttl_minutes: int = 10,
+    ) -> dict:
+        grant_id = hashlib.sha256(
+            f"{conversation_id}:{call_id}".encode("utf-8")
+        ).hexdigest()
+        now = datetime.now(timezone.utc)
+        item = {
+            "id": grant_id,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "call_id": call_id,
+            "plan_hash": plan_hash,
+            "idempotency_key": hashlib.sha256(
+                f"travel-request:{grant_id}".encode("utf-8")
+            ).hexdigest(),
+            "status": "issued",
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=ttl_minutes)).isoformat(),
+            "ttl": ttl_minutes * 60,
+        }
         try:
-            doc = await self._container.read_item(
-                checkpoint_id, partition_key=checkpoint_id
-            )
-            return self._doc_to_checkpoint(doc)
-        except Exception:
-            from agent_framework._workflows._checkpoint import (
-                WorkflowCheckpointException,
-            )
-            raise WorkflowCheckpointException(
-                f"Checkpoint {checkpoint_id} not found"
+            await self._container.create_item(item, if_none_match="*")
+            return item
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            return await self._container.read_item(
+                item=grant_id,
+                partition_key=grant_id,
             )
 
-    async def list_checkpoints(self, *, workflow_name: str) -> list:
-        """workflow_name に一致するチェックポイントを一覧取得"""
-        query = (
-            "SELECT * FROM c WHERE c.workflow_name = @wn "
-            "ORDER BY c.timestamp DESC"
-        )
-        params = [{"name": "@wn", "value": workflow_name}]
-        items = [
-            item
-            async for item in self._container.query_items(
-                query, parameters=params,
-            )
-        ]
-        return [self._doc_to_checkpoint(i) for i in items]
 
-    async def list_checkpoint_ids(self, *, workflow_name: str) -> list[str]:
-        """workflow_name に一致するチェックポイント ID を一覧取得"""
-        query = (
-            "SELECT c.id FROM c WHERE c.workflow_name = @wn "
-            "ORDER BY c.timestamp DESC"
-        )
-        params = [{"name": "@wn", "value": workflow_name}]
-        return [
-            item["id"]
-            async for item in self._container.query_items(
-                query, parameters=params,
-            )
-        ]
-
-    async def delete(self, checkpoint_id: str) -> bool:
-        """チェックポイントを削除"""
-        try:
-            await self._container.delete_item(
-                checkpoint_id, partition_key=checkpoint_id
-            )
-            return True
-        except Exception:
-            logger.warning(f"Failed to delete checkpoint {checkpoint_id}")
-            return False
-
-    async def get_latest(self, *, workflow_name: str):
-        """workflow_name の最新チェックポイントを取得"""
-        checkpoints = await self.list_checkpoints(workflow_name=workflow_name)
-        return checkpoints[0] if checkpoints else None
-
-    def _doc_to_checkpoint(self, doc: dict):
-        """Cosmos DB ドキュメントを WorkflowCheckpoint に変換"""
-        from agent_framework._workflows._checkpoint import WorkflowCheckpoint
-
-        return WorkflowCheckpoint(
-            workflow_name=doc.get("workflow_name", ""),
-            graph_signature_hash=doc.get("graph_signature_hash", ""),
-            checkpoint_id=doc.get("checkpoint_id", doc["id"]),
-            previous_checkpoint_id=doc.get("previous_checkpoint_id"),
-            timestamp=doc.get("timestamp", ""),
-            messages=doc.get("messages", {}),
-            state=doc.get("state", {}),
-            pending_request_info_events=doc.get("pending_request_info_events", {}),
-            iteration_count=doc.get("iteration_count", 0),
-            metadata=doc.get("metadata", {}),
-            version=doc.get("version", "1"),
-        )
+def get_approval_grant_store() -> ApprovalGrantStore:
+    global _approval_grant_store
+    if _approval_grant_store is None:
+        _approval_grant_store = ApprovalGrantStore()
+    return _approval_grant_store

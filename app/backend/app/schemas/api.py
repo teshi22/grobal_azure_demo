@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class CreateConversationRequest(BaseModel):
-    user_id: str = Field(description="ユーザー ID")
+    """Conversation identity is derived from the authenticated user."""
 
 
 class ConversationResponse(BaseModel):

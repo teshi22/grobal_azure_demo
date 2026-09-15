@@ -1,16 +1,12 @@
-"""会話 API エンドポイント
+"""Authenticated conversation and durable SSE endpoints."""
 
-POST /api/conversations          — 新規会話作成
-POST /api/conversations/{id}/messages — メッセージ送信 (初回 + HITL 応答)
-GET  /api/conversations/{id}     — 会話情報取得
-"""
+from __future__ import annotations
 
-import logging
-import time
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
+from app.auth.entra import CurrentUser
 from app.schemas.api import (
     ConversationResponse,
     CreateConversationRequest,
@@ -18,105 +14,85 @@ from app.schemas.api import (
     SendMessageRequest,
 )
 from app.services.cosmos import get_conversation_store, get_event_store
-from app.workflow.runner import run_workflow_async, resume_workflow_async
+from app.services.hosted_agent import process_queued_message
 
-router = APIRouter(tags=["conversations"])
-logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
-@router.post("/conversations", response_model=ConversationResponse)
-async def create_conversation(req: CreateConversationRequest):
-    """新規会話を作成する"""
-    t0 = time.perf_counter()
+@router.post("", response_model=ConversationResponse)
+async def create_conversation(
+    _request: CreateConversationRequest,
+    current_user: CurrentUser,
+):
     conversation_id = str(uuid.uuid4())
-    store = get_conversation_store()
-    await store.create(
-        conversation_id=conversation_id,
-        user_id=req.user_id,
-    )
-    logger.info("[PERF] create_conversation: %.3fs", time.perf_counter() - t0)
+    await get_conversation_store().create(conversation_id, current_user["sub"])
     return ConversationResponse(
         conversation_id=conversation_id,
         status="created",
     )
 
 
-@router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
-async def get_conversation(conversation_id: str):
-    """会話情報を取得する"""
-    store = get_conversation_store()
-    conv = await store.get(conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return ConversationResponse(
-        conversation_id=conv["id"],
-        status=conv.get("status", "unknown"),
-    )
-
-
-@router.post(
-    "/conversations/{conversation_id}/messages",
-    response_model=MessageResponse,
-)
+@router.post("/{conversation_id}/messages", response_model=MessageResponse)
 async def send_message(
     conversation_id: str,
-    req: SendMessageRequest,
+    body: SendMessageRequest,
     background_tasks: BackgroundTasks,
-    x_idempotency_key: str | None = Header(None),
+    current_user: CurrentUser,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
-    """メッセージを送信する (初回リクエスト or HITL 応答)
-
-    冪等性キーで重複送信を防止する。
-    """
-    store = get_conversation_store()
-    t0 = time.perf_counter()
-    conv = await store.get(conversation_id)
-    if not conv:
+    conversations = get_conversation_store()
+    events = get_event_store()
+    conversation = await conversations.get_owned(
+        conversation_id,
+        current_user["sub"],
+    )
+    if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    t1 = time.perf_counter()
-    logger.info("[PERF] send_message get_conv: %.3fs", t1 - t0)
 
-    # 冪等性チェック
-    if x_idempotency_key:
-        event_store = get_event_store()
-        existing = await event_store.get_by_idempotency_key(
-            conversation_id, x_idempotency_key
-        )
-        t2 = time.perf_counter()
-        logger.info("[PERF] send_message idempotency: %.3fs", t2 - t1)
-        if existing:
-            return MessageResponse(
-                message_id=existing["message_id"],
-                status="duplicate",
-            )
+    existing = await events.get_by_idempotency_key(
+        conversation_id,
+        idempotency_key,
+    )
+    if existing:
+        return MessageResponse(message_id=existing["message_id"], status="duplicate")
 
     message_id = str(uuid.uuid4())
-    status = conv.get("status", "created")
+    if not await conversations.claim_message(
+        conversation_id,
+        idempotency_key,
+        message_id=message_id,
+        user_id=current_user["sub"],
+        content=body.content,
+    ):
+        latest = await conversations.get(conversation_id)
+        if latest and latest.get("last_idempotency_key") == idempotency_key:
+            active_message = latest.get("active_message") or {}
+            return MessageResponse(
+                message_id=str(active_message.get("message_id", "")),
+                status="duplicate",
+            )
+        if latest and latest.get("status") == "processing":
+            raise HTTPException(
+                status_code=409,
+                detail="Conversation is already processing",
+            )
+        return MessageResponse(message_id="", status="duplicate")
 
-    if status in ("created", "completed", "error"):
-        # 初回メッセージ → ワークフロー開始
-        background_tasks.add_task(
-            run_workflow_async,
-            conversation_id=conversation_id,
-            user_input=req.content,
-            message_id=message_id,
-        )
-    elif status == "waiting_for_input":
-        # HITL 応答 → ワークフロー再開
-        background_tasks.add_task(
-            resume_workflow_async,
-            conversation_id=conversation_id,
-            user_input=req.content,
-            message_id=message_id,
-        )
-    else:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Conversation is in '{status}' state, cannot accept messages",
-        )
-
-    # 既に取得済みの conv を再利用 (update_status の再 get を省略)
-    await store.update_status_direct(conv, "processing")
-    logger.info("[PERF] send_message total: %.3fs", time.perf_counter() - t0)
-
+    await events.append(
+        conversation_id,
+        "user_message",
+        {"content": body.content},
+        message_id=message_id,
+        idempotency_key=idempotency_key,
+    )
+    await events.append(
+        conversation_id,
+        "status",
+        {"step": "hosted_agent", "label": "処理中..."},
+        message_id=message_id,
+    )
+    background_tasks.add_task(
+        process_queued_message,
+        conversation_id=conversation_id,
+    )
     return MessageResponse(message_id=message_id, status="accepted")

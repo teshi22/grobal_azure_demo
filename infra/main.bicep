@@ -15,11 +15,8 @@ param projectDescription string = 'AI Travel Request Agent Demo'
 @description('プロジェクトの表示名')
 param projectDisplayName string = 'Travel Request Agent'
 
-@description('Foundry リソースのデプロイリージョン')
-param location string = 'swedencentral'
-
-@description('Foundry 以外のリソースのデプロイリージョン')
-param secondaryLocation string = 'japaneast'
+@description('すべてのリソースのデプロイリージョン')
+param location string = 'japaneast'
 
 @description('GPT モデル名')
 param modelName string = 'gpt-5.4'
@@ -34,10 +31,13 @@ param modelVersion string = '2026-03-05'
 param modelSkuName string = 'GlobalStandard'
 
 @description('モデルキャパシティ (TPM)')
-param modelCapacity int = 30
+param modelCapacity int = 20
 
 @description('MCP Functions 用 Entra ID アプリ登録のクライアント ID')
 param mcpEntraClientId string = ''
+
+@description('Web/BFF 用 Entra ID アプリ登録のクライアント ID')
+param webEntraClientId string = ''
 
 // ユニークサフィックス生成 (リソースグループに対して決定論的)
 var uniqueSuffix = substring(uniqueString(resourceGroup().id), 0, 4)
@@ -60,7 +60,18 @@ module aiAccount 'modules/ai-account.bicep' = {
 }
 
 // =============================================================================
-// 2. プロジェクト
+// 2. Application Insights (トレース用)
+// =============================================================================
+module appInsights 'modules/app-insights.bicep' = {
+  name: 'app-insights-${uniqueSuffix}'
+  params: {
+    appInsightsName: '${accountName}-insights'
+    location: location
+  }
+}
+
+// =============================================================================
+// 3. プロジェクト
 // =============================================================================
 module aiProject 'modules/ai-project.bicep' = {
   name: 'ai-project-${uniqueSuffix}'
@@ -70,32 +81,13 @@ module aiProject 'modules/ai-project.bicep' = {
     description: projectDescription
     displayName: projectDisplayName
     location: location
+    appInsightsName: appInsights.outputs.appInsightsName
+    appInsightsConnectionString: appInsights.outputs.connectionString
   }
 }
 
 // =============================================================================
-// 3. Bing Search (Grounding 用)
-// =============================================================================
-module bingSearch 'modules/bing-search.bicep' = {
-  name: 'bing-search-${uniqueSuffix}'
-  params: {
-    accountName: aiAccount.outputs.accountName
-  }
-}
-
-// =============================================================================
-// 4. Application Insights (トレース用)
-// =============================================================================
-module appInsights 'modules/app-insights.bicep' = {
-  name: 'app-insights-${uniqueSuffix}'
-  params: {
-    appInsightsName: '${accountName}-insights'
-    location: secondaryLocation
-  }
-}
-
-// =============================================================================
-// 5. Azure Container Registry
+// 4. Azure Container Registry
 // =============================================================================
 var acrName = toLower('${aiServicesName}acr${uniqueSuffix}')
 
@@ -103,12 +95,31 @@ module acr 'modules/acr.bicep' = {
   name: 'acr-${uniqueSuffix}'
   params: {
     acrName: acrName
-    location: secondaryLocation
+    location: location
+  }
+}
+
+resource deployedAcr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: acrName
+}
+
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+
+resource projectAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, accountName, projectName, acrName, acrPullRoleId)
+  scope: deployedAcr
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      acrPullRoleId
+    )
+    principalId: aiProject.outputs.projectPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
 // =============================================================================
-// 6. Cosmos DB (チェックポイント + イベントストア + 会話メタデータ)
+// 5. Cosmos DB (チェックポイント + イベントストア + 会話メタデータ)
 // =============================================================================
 var cosmosAccountName = toLower('${aiServicesName}cosmos${uniqueSuffix}')
 
@@ -116,13 +127,13 @@ module cosmosDb 'modules/cosmos-db.bicep' = {
   name: 'cosmos-db-${uniqueSuffix}'
   params: {
     accountName: cosmosAccountName
-    location: secondaryLocation
+    location: location
     // RBAC は Container Apps デプロイ後に別途設定 (循環依存回避)
   }
 }
 
 // =============================================================================
-// 7. Container Apps (Frontend + Backend)
+// 6. Container Apps (Frontend + Backend)
 // =============================================================================
 var envName = toLower('${aiServicesName}env${uniqueSuffix}')
 
@@ -130,15 +141,15 @@ module containerApps 'modules/container-apps.bicep' = {
   name: 'container-apps-${uniqueSuffix}'
   params: {
     envName: envName
-    location: secondaryLocation
+    location: location
     acrLoginServer: acr.outputs.acrLoginServer
     cosmosEndpoint: cosmosDb.outputs.accountEndpoint
     aiProjectEndpoint: '${aiAccount.outputs.endpoint}api/projects/${projectName}'
-    mcpToolEndpoint: functions.outputs.mcpEndpoint
-    mcpFunctionAppClientId: mcpEntraClientId
     appInsightsConnectionString: appInsights.outputs.connectionString
     logAnalyticsCustomerId: appInsights.outputs.logAnalyticsCustomerId
     logAnalyticsSharedKey: appInsights.outputs.logAnalyticsSharedKey
+    webEntraClientId: webEntraClientId
+    entraTenantId: subscription().tenantId
   }
 }
 
@@ -159,36 +170,8 @@ resource appCosmosRbac 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments
   }
 }
 
-// AI Services RBAC: アプリの Managed Identity に Cognitive Services User + Azure AI Developer を付与
-resource aiAccountRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
-  name: accountName
-}
-
-var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
-var azureAIDeveloperRoleId = '64702f94-c441-49e6-a78b-ef80e0188fee'
-
-resource appCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(aiAccountRef.id, envName, cognitiveServicesUserRoleId)
-  scope: aiAccountRef
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUserRoleId)
-    principalId: containerApps.outputs.appPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource appAIDeveloper 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(aiAccountRef.id, envName, azureAIDeveloperRoleId)
-  scope: aiAccountRef
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', azureAIDeveloperRoleId)
-    principalId: containerApps.outputs.appPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
 // =============================================================================
-// 8. Azure Functions (MCP ツール)
+// 7. Azure Functions (MCP ツール)
 // =============================================================================
 var functionAppName = toLower('${aiServicesName}func${uniqueSuffix}')
 var funcStorageName = toLower('${aiServicesName}fs${uniqueSuffix}')
@@ -198,7 +181,7 @@ module functions 'modules/functions.bicep' = {
   params: {
     functionAppName: functionAppName
     storageAccountName: funcStorageName
-    location: secondaryLocation
+    location: location
     appInsightsConnectionString: appInsights.outputs.connectionString
     cosmosEndpoint: cosmosDb.outputs.accountEndpoint
     mcpEntraClientId: mcpEntraClientId
@@ -220,15 +203,24 @@ resource funcCosmosRbac 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignment
 // Outputs
 // =============================================================================
 output accountName string = aiAccount.outputs.accountName
+output accountResourceId string = aiAccount.outputs.accountId
 output projectName string = aiProject.outputs.projectName
+output projectResourceId string = aiProject.outputs.projectId
 output endpoint string = aiAccount.outputs.endpoint
 output projectEndpoint string = '${aiAccount.outputs.endpoint}api/projects/${projectName}'
-output bingConnectionName string = bingSearch.outputs.connectionName
 output appInsightsConnectionString string = appInsights.outputs.connectionString
+output appInsightsResourceId string = appInsights.outputs.appInsightsResourceId
 output acrName string = acr.outputs.acrName
 output acrLoginServer string = acr.outputs.acrLoginServer
 output cosmosEndpoint string = cosmosDb.outputs.accountEndpoint
+output cosmosAccountName string = cosmosDb.outputs.accountName
+output cosmosAccountResourceId string = cosmosDb.outputs.accountId
+output cosmosDatabaseName string = cosmosDb.outputs.databaseName
+output appName string = containerApps.outputs.appName
 output appUrl string = 'https://${containerApps.outputs.appFqdn}'
 output mcpEndpoint string = functions.outputs.mcpEndpoint
 output functionAppName string = functions.outputs.functionAppName
+output functionAppResourceId string = functions.outputs.functionAppId
+output functionAppHostName string = functions.outputs.functionAppHostName
+output functionEndpoint string = functions.outputs.functionEndpoint
 output funcStorageAccountName string = functions.outputs.storageAccountName

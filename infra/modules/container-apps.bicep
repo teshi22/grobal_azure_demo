@@ -23,14 +23,17 @@ param cosmosEndpoint string = ''
 @description('AI Project エンドポイント')
 param aiProjectEndpoint string = ''
 
-@description('MCP ツールエンドポイント')
-param mcpToolEndpoint string = ''
-
-@description('MCP Functions 用 Entra アプリクライアント ID（MI トークン取得用）')
-param mcpFunctionAppClientId string = ''
-
 @description('Application Insights 接続文字列')
 param appInsightsConnectionString string = ''
+
+@description('Foundry Hosted Agent 名')
+param hostedAgentName string = 'travel-request-agent'
+
+@description('Web/BFF 用 Entra ID アプリ登録のクライアント ID')
+param webEntraClientId string = ''
+
+@description('Entra テナント ID')
+param entraTenantId string = subscription().tenantId
 
 // Container Apps Environment (Workload Profile — Consumption)
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -65,15 +68,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: env.id
     configuration: {
-      registries: [
-        {
-          server: acrLoginServer
-          identity: 'system'
-        }
-      ]
       ingress: {
         external: true
-        targetPort: 8000
+        targetPort: 80
         transport: 'http'
       }
     }
@@ -81,7 +78,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'app'
-          image: 'mcr.microsoft.com/k8se/quickstart:latest'
+          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -89,30 +86,11 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           env: [
             { name: 'AZURE_AI_PROJECT_ENDPOINT', value: aiProjectEndpoint }
             { name: 'COSMOS_ENDPOINT', value: cosmosEndpoint }
-            { name: 'MCP_TOOL_ENDPOINT', value: mcpToolEndpoint }
-            { name: 'MCP_FUNCTION_APP_CLIENT_ID', value: mcpFunctionAppClientId }
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+            { name: 'HOSTED_AGENT_NAME', value: hostedAgentName }
+            { name: 'AZURE_TENANT_ID', value: entraTenantId }
+            { name: 'ENTRA_CLIENT_ID', value: webEntraClientId }
             { name: 'ENABLE_DOCS', value: 'false' }
-          ]
-          probes: [
-            {
-              type: 'Liveness'
-              httpGet: {
-                path: '/health'
-                port: 8000
-              }
-              periodSeconds: 30
-              failureThreshold: 3
-            }
-            {
-              type: 'Readiness'
-              httpGet: {
-                path: '/health'
-                port: 8000
-              }
-              initialDelaySeconds: 5
-              periodSeconds: 10
-            }
           ]
         }
       ]
@@ -134,6 +112,37 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
+resource appAuthSettings 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (webEntraClientId != '') {
+  parent: app
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+      excludedPaths: [
+        '/health'
+      ]
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        registration: {
+          clientId: webEntraClientId
+          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            webEntraClientId
+            'api://${webEntraClientId}'
+          ]
+        }
+      }
+    }
+  }
+}
+
 // ACR Pull ロール: App Managed Identity → ACR
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
@@ -148,4 +157,5 @@ resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 output appPrincipalId string = app.identity.principalId
+output appName string = app.name
 output appFqdn string = app.properties.configuration.ingress.fqdn

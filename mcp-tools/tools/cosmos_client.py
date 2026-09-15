@@ -18,6 +18,10 @@ _client: CosmosClient | None = None
 COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT", "")
 COSMOS_DATABASE = os.environ.get("COSMOS_DATABASE", "travel-agent")
 COSMOS_CONTAINER = os.environ.get("COSMOS_TRAVEL_REQUEST_CONTAINER", "travel-requests")
+COSMOS_APPROVAL_GRANT_CONTAINER = os.environ.get(
+    "COSMOS_APPROVAL_GRANT_CONTAINER",
+    "approval-grants",
+)
 
 
 def _get_client() -> CosmosClient:
@@ -35,3 +39,10 @@ def get_container() -> ContainerProxy:
     client = _get_client()
     db = client.get_database_client(COSMOS_DATABASE)
     return db.get_container_client(COSMOS_CONTAINER)
+
+
+def get_approval_grant_container() -> ContainerProxy:
+    """Return the approval grant container."""
+    client = _get_client()
+    db = client.get_database_client(COSMOS_DATABASE)
+    return db.get_container_client(COSMOS_APPROVAL_GRANT_CONTAINER)

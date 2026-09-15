@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createConversation,
   createEventSource,
@@ -17,6 +17,7 @@ export function useChat() {
     null,
   );
   const eventSourceRef = useRef<EventSource | null>(null);
+  const lastEventIdRef = useRef("");
 
   const addMessage = useCallback((msg: ChatMessage) => {
     setMessages((prev) => [...prev, msg]);
@@ -28,10 +29,11 @@ export function useChat() {
         eventSourceRef.current.close();
       }
 
-      const es = createEventSource(convId);
+      const es = createEventSource(convId, lastEventIdRef.current || undefined);
       eventSourceRef.current = es;
 
       es.addEventListener("status", (e) => {
+        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
         const data = JSON.parse(e.data);
         addMessage({
           id: `status-${Date.now()}`,
@@ -43,6 +45,7 @@ export function useChat() {
       });
 
       es.addEventListener("agent_response", (e) => {
+        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
         const data = JSON.parse(e.data);
         addMessage({
           id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -54,6 +57,7 @@ export function useChat() {
       });
 
       es.addEventListener("policy_result", (e) => {
+        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
         const data = JSON.parse(e.data) as PolicyResultData;
         addMessage({
           id: `policy-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -66,6 +70,7 @@ export function useChat() {
       });
 
       es.addEventListener("hitl_request", (e) => {
+        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
         const data = JSON.parse(e.data) as HITLRequestEvent;
         // メッセージ配列に追加 (チャット履歴に残す)
         addMessage({
@@ -78,9 +83,11 @@ export function useChat() {
         });
         setHitlRequest(data);
         setIsLoading(false);
+        es.close();
       });
 
       es.addEventListener("complete", (e) => {
+        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
         const data = JSON.parse(e.data);
         const completion: CompletionData = {
           output: data.output,
@@ -103,6 +110,8 @@ export function useChat() {
 
       es.addEventListener("error", (e) => {
         if (e instanceof MessageEvent) {
+          lastEventIdRef.current =
+            e.lastEventId || lastEventIdRef.current;
           const data = JSON.parse(e.data);
           addMessage({
             id: `error-${Date.now()}`,
@@ -111,11 +120,19 @@ export function useChat() {
             timestamp: new Date(),
             eventType: "error",
           });
+          es.close();
         }
         setIsLoading(false);
       });
     },
     [addMessage],
+  );
+
+  useEffect(
+    () => () => {
+      eventSourceRef.current?.close();
+    },
+    [],
   );
 
   const send = useCallback(
@@ -132,12 +149,12 @@ export function useChat() {
       try {
         let convId = conversationId;
         if (!convId) {
-          const conv = await createConversation("dev-user");
+          const conv = await createConversation();
           convId = conv.conversation_id;
           setConversationId(convId);
-          connectSSE(convId);
         }
 
+        connectSSE(convId);
         const idempotencyKey = `${convId}-${Date.now()}`;
         await sendMessage(convId, content, idempotencyKey);
 

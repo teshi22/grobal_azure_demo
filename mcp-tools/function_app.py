@@ -27,10 +27,33 @@ MCP_TOOLS = [
                 },
                 "conversation_id": {
                     "type": "string",
-                    "description": "会話 ID（べき等性キー）",
+                    "description": "BFF が所有権を確認した会話 ID",
+                },
+                "approval_grant_id": {
+                    "type": "string",
+                    "description": "BFF が発行した短命・一度限りの承認 grant",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "申請 ID を決定する冪等性キー",
+                },
+                "plan_hash": {
+                    "type": "string",
+                    "description": "承認済み旅程の SHA-256",
+                },
+                "application_data": {
+                    "type": "object",
+                    "description": "構造化された出張申請データ",
                 },
             },
-            "required": ["application_text"],
+            "required": [
+                "application_text",
+                "conversation_id",
+                "approval_grant_id",
+                "idempotency_key",
+                "plan_hash",
+                "application_data",
+            ],
         },
     },
 ]
