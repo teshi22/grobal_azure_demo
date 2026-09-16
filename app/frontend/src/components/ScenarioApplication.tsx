@@ -211,7 +211,6 @@ export function ScenarioApplication() {
             controlsDisabled={isStartingBoth}
             conversationOptions={{
               scenario: scenario.id,
-              interaction_mode: "submission",
             }}
             onStateChange={
               scenario.id === "agent_framework_workflow"

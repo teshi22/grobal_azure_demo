@@ -19,7 +19,6 @@ from app.services.cosmos import (
 )
 from app.services.foundry import (
     invoke_hosted_agent,
-    invoke_playground_agent,
     invoke_single_prompt_agent,
     response_to_dict,
 )
@@ -71,8 +70,6 @@ def _plan_hash(plan: dict[str, Any]) -> str:
 
 def _extract_request_info(
     response: dict[str, Any],
-    *,
-    allow_submit_confirmation: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     for item in response.get("output", []):
         if item.get("type") != "function_call" or item.get("name") != "request_info":
@@ -87,11 +84,6 @@ def _extract_request_info(
         request_type = str(payload.get("type", ""))
         if request_type not in _REQUEST_INFO_TYPES:
             raise ValueError(f"Unsupported HITL request type: {request_type}")
-        if request_type == "submit_confirmation" and not allow_submit_confirmation:
-            raise ValueError(
-                "Submission confirmation is not supported in playground mode"
-            )
-
         message = str(
             payload.get("message")
             or payload.get("question")
@@ -161,40 +153,29 @@ def _approved(content: str) -> bool:
     return content.strip().lower() in _APPROVAL_WORDS
 
 
-def _conversation_route(conversation: dict[str, Any]) -> tuple[str, str]:
+def _conversation_route(conversation: dict[str, Any]) -> str:
     scenario = str(
         conversation.get("scenario") or "agent_framework_workflow"
-    )
-    interaction_mode = str(
-        conversation.get("interaction_mode") or "submission"
     )
     if scenario not in {
         "agent_framework_workflow",
         "single_prompt_agent",
     }:
         raise ValueError(f"Unsupported conversation scenario: {scenario}")
-    if interaction_mode not in {"submission", "playground"}:
-        raise ValueError(
-            f"Unsupported conversation interaction mode: {interaction_mode}"
-        )
-    if interaction_mode == "playground":
-        interaction_mode = "submission"
-    return scenario, interaction_mode
+    return scenario
 
 
 def _invoke_for_conversation(
     *,
     scenario: str,
-    interaction_mode: str,
     conversation_id: str,
     user_id: str,
-    submission_token: str,
     message: str | None = None,
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
 ):
-    if scenario == "agent_framework_workflow" and interaction_mode == "submission":
+    if scenario == "agent_framework_workflow":
         return invoke_hosted_agent(
             conversation_id=conversation_id,
             user_id=user_id,
@@ -205,20 +186,11 @@ def _invoke_for_conversation(
         )
     if scenario == "single_prompt_agent":
         return invoke_single_prompt_agent(
-            interaction_mode=interaction_mode,
             conversation_id=conversation_id,
-            submission_token=submission_token,
             message=message,
             previous_response_id=previous_response_id,
         )
-    return invoke_playground_agent(
-        scenario=scenario,
-        conversation_id=conversation_id,
-        message=message,
-        previous_response_id=previous_response_id,
-        function_call_id=function_call_id,
-        function_output=function_output,
-    )
+    raise ValueError(f"Unsupported conversation scenario: {scenario}")
 
 
 async def _build_function_output(
@@ -314,10 +286,7 @@ async def process_message(
         if not conversation:
             raise LookupError("Conversation not found")
 
-        scenario, interaction_mode = _conversation_route(conversation)
-        submission_token = str(
-            conversation.get("submission_token") or conversation_id
-        )
+        scenario = _conversation_route(conversation)
         pending = conversation.get("pending_request")
         if scenario == "single_prompt_agent" and pending:
             raise RuntimeError(
@@ -335,10 +304,8 @@ async def process_message(
             response = await asyncio.to_thread(
                 _invoke_for_conversation,
                 scenario=scenario,
-                interaction_mode=interaction_mode,
                 conversation_id=conversation_id,
                 user_id=user_id,
-                submission_token=submission_token,
                 previous_response_id=conversation.get("foundry_response_id"),
                 function_call_id=pending["call_id"],
                 function_output=function_output,
@@ -347,10 +314,8 @@ async def process_message(
             response = await asyncio.to_thread(
                 _invoke_for_conversation,
                 scenario=scenario,
-                interaction_mode=interaction_mode,
                 conversation_id=conversation_id,
                 user_id=user_id,
-                submission_token=submission_token,
                 message=content,
                 previous_response_id=conversation.get("foundry_response_id"),
             )
@@ -395,10 +360,7 @@ async def process_message(
             )
             return
 
-        request_info = _extract_request_info(
-            response_data,
-            allow_submit_confirmation=interaction_mode == "submission",
-        )
+        request_info = _extract_request_info(response_data)
         if request_info:
             next_pending, hitl_event = request_info
             await conversations.update(

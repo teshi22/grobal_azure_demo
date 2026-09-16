@@ -44,12 +44,12 @@ def test_conversation_store_persists_route_and_defaults_legacy_documents():
             "conversation-1",
             "user-1",
             scenario="single_prompt_agent",
-            interaction_mode="playground",
         )
     )
 
     assert created["scenario"] == "single_prompt_agent"
-    assert created["interaction_mode"] == "playground"
+    assert "interaction_mode" not in created
+    assert "submission_token" not in created
 
     container.item = {
         "id": "legacy-conversation",
@@ -58,7 +58,6 @@ def test_conversation_store_persists_route_and_defaults_legacy_documents():
     }
     legacy = asyncio.run(store.get("legacy-conversation"))
     assert legacy["scenario"] == "agent_framework_workflow"
-    assert legacy["interaction_mode"] == "submission"
 
 
 class _AsyncItems:

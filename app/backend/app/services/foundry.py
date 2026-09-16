@@ -131,63 +131,18 @@ def invoke_hosted_agent(
     )
 
 
-def invoke_playground_agent(
-    *,
-    scenario: str,
-    conversation_id: str,
-    message: str | None = None,
-    previous_response_id: str | None = None,
-    function_call_id: str | None = None,
-    function_output: dict[str, Any] | None = None,
-):
-    """Start or resume a side-effect-free playground conversation."""
-    if scenario == "agent_framework_workflow":
-        agent_name = settings.hosted_agent_name
-        agent_session_id = conversation_id
-    elif scenario == "single_prompt_agent":
-        agent_name = settings.single_prompt_agent_name
-        agent_session_id = None
-    else:
-        raise ValueError(f"Unsupported conversation scenario: {scenario}")
-
-    return invoke_conversation_agent(
-        agent_name=agent_name,
-        message_envelope=(
-            {
-                "mode": "playground",
-                "conversation_id": conversation_id,
-                "input": message,
-            }
-            if message is not None
-            else None
-        ),
-        previous_response_id=previous_response_id,
-        function_call_id=function_call_id,
-        function_output=function_output,
-        agent_session_id=agent_session_id,
-    )
-
-
 def invoke_single_prompt_agent(
     *,
-    interaction_mode: str,
     conversation_id: str,
-    submission_token: str,
     message: str | None = None,
     previous_response_id: str | None = None,
 ):
     """Start or resume an interactive Single Prompt Agent conversation."""
-    if interaction_mode not in {"submission", "playground"}:
-        raise ValueError(
-            f"Unsupported single-agent interaction mode: {interaction_mode}"
-        )
     return invoke_conversation_agent(
         agent_name=settings.single_prompt_agent_name,
         message_envelope=(
             {
-                "mode": interaction_mode,
                 "conversation_id": conversation_id,
-                "submission_token": submission_token,
                 "input": message,
             }
             if message is not None

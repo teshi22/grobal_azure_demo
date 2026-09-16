@@ -26,15 +26,12 @@ class LocalConversationStore:
         user_id: str,
         *,
         scenario: str = "agent_framework_workflow",
-        interaction_mode: str = "submission",
     ) -> dict:
         now = _now()
         item = {
             "id": conversation_id,
             "user_id": user_id,
             "scenario": scenario,
-            "interaction_mode": interaction_mode,
-            "submission_token": uuid.uuid4().hex,
             "status": "created",
             "foundry_response_id": None,
             "pending_request": None,

@@ -98,7 +98,10 @@ def test_single_agent_has_only_web_search_and_direct_mcp_tools():
         "server_label": "travel-request-submission",
         "server_url": "https://example.test/mcp",
         "project_connection_id": "travel-mcp-connection",
-        "allowed_tools": ["submit_travel_request_with_approval"],
+        "allowed_tools": [
+            "prepare_travel_request_submission",
+            "submit_travel_request_with_approval",
+        ],
         "require_approval": "never",
         "type": "mcp",
     }

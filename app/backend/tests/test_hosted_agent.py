@@ -58,62 +58,6 @@ class _CaptureResponses:
         return object()
 
 
-@pytest.mark.parametrize(
-    ("scenario", "expected_agent_name", "expected_session"),
-    [
-        (
-            "agent_framework_workflow",
-            "hosted-agent",
-            {"agent_session_id": "conversation-1"},
-        ),
-        ("single_prompt_agent", "prompt-agent", None),
-    ],
-)
-def test_playground_first_invocation_uses_scenario_envelope(
-    monkeypatch,
-    scenario,
-    expected_agent_name,
-    expected_session,
-):
-    responses = _CaptureResponses()
-    monkeypatch.setattr(settings, "hosted_agent_name", "hosted-agent")
-    monkeypatch.setattr(settings, "single_prompt_agent_name", "prompt-agent")
-    monkeypatch.setattr(
-        foundry,
-        "get_hosted_responses_client",
-        lambda: responses,
-    )
-
-    def get_agent_client(agent_name):
-        assert agent_name == expected_agent_name
-        return responses
-
-    monkeypatch.setattr(
-        foundry,
-        "get_agent_responses_client",
-        get_agent_client,
-    )
-
-    foundry.invoke_playground_agent(
-        scenario=scenario,
-        conversation_id="conversation-1",
-        message="大阪へ出張",
-    )
-
-    assert json.loads(responses.kwargs["input"]) == {
-        "mode": "playground",
-        "conversation_id": "conversation-1",
-        "input": "大阪へ出張",
-    }
-    assert responses.kwargs["store"] is True
-    assert responses.kwargs["stream"] is False
-    assert "extra_headers" not in responses.kwargs
-    if expected_session is None:
-        assert "extra_body" not in responses.kwargs
-    else:
-        assert responses.kwargs["extra_body"] == expected_session
-
-
 def test_submission_invocation_preserves_existing_hosted_agent_contract(
     monkeypatch,
 ):
@@ -153,25 +97,21 @@ def test_single_prompt_resume_sends_plain_conversation_turn(monkeypatch):
     )
 
     foundry.invoke_single_prompt_agent(
-        interaction_mode="submission",
         conversation_id="conversation-1",
-        submission_token="submission-token-1",
         message="はい",
         previous_response_id="response-1",
     )
 
     assert responses.kwargs["previous_response_id"] == "response-1"
     assert json.loads(responses.kwargs["input"]) == {
-        "mode": "submission",
         "conversation_id": "conversation-1",
-        "submission_token": "submission-token-1",
         "input": "はい",
     }
     assert "extra_body" not in responses.kwargs
     assert "extra_headers" not in responses.kwargs
 
 
-def test_single_prompt_submission_uses_submission_envelope(monkeypatch):
+def test_single_prompt_initial_turn_uses_modeless_input(monkeypatch):
     responses = _CaptureResponses()
     monkeypatch.setattr(settings, "single_prompt_agent_name", "prompt-agent")
     monkeypatch.setattr(
@@ -181,16 +121,12 @@ def test_single_prompt_submission_uses_submission_envelope(monkeypatch):
     )
 
     foundry.invoke_single_prompt_agent(
-        interaction_mode="submission",
         conversation_id="conversation-1",
-        submission_token="submission-token-1",
         message="大阪へ出張",
     )
 
     assert json.loads(responses.kwargs["input"]) == {
-        "mode": "submission",
         "conversation_id": "conversation-1",
-        "submission_token": "submission-token-1",
         "input": "大阪へ出張",
     }
     assert "extra_body" not in responses.kwargs
@@ -288,19 +224,6 @@ def test_extracts_serialized_submission_payload():
     assert event["data"]["application_text"] == "申請書"
 
 
-def test_rejects_submission_confirmation_in_playground():
-    with pytest.raises(ValueError, match="not supported in playground"):
-        _extract_request_info(
-            _response(
-                {
-                    "type": "submit_confirmation",
-                    "plan_hash": "abc123",
-                }
-            ),
-            allow_submit_confirmation=False,
-        )
-
-
 def test_raises_for_failed_hosted_agent_response():
     with pytest.raises(RuntimeError, match="literal_error"):
         hosted_agent._raise_for_response_error(
@@ -383,7 +306,7 @@ def test_processes_claimed_durable_message(monkeypatch):
     assert processed == [{"conversation_id": "conversation-1", **message}]
 
 
-def test_process_message_upgrades_stored_single_prompt_playground_conversation(
+def test_process_message_ignores_legacy_single_prompt_mode_fields(
     monkeypatch,
 ):
     invocations = []
@@ -395,6 +318,7 @@ def test_process_message_upgrades_stored_single_prompt_playground_conversation(
                 "user_id": user_id,
                 "scenario": "single_prompt_agent",
                 "interaction_mode": "playground",
+                "submission_token": "legacy-token",
                 "foundry_response_id": None,
                 "pending_request": None,
             }
@@ -453,9 +377,7 @@ def test_process_message_upgrades_stored_single_prompt_playground_conversation(
 
     assert invocations == [
         {
-            "interaction_mode": "submission",
             "conversation_id": "conversation-1",
-            "submission_token": "conversation-1",
             "message": "大阪へ出張",
             "previous_response_id": None,
         }
@@ -469,8 +391,6 @@ def test_single_prompt_rejects_legacy_callback_conversation(monkeypatch):
         async def get_owned(self, conversation_id, user_id):
             return {
                 "scenario": "single_prompt_agent",
-                "interaction_mode": "submission",
-                "submission_token": "submission-token-1",
                 "foundry_response_id": "response-1",
                 "pending_request": {
                     "call_id": "legacy-call",
@@ -539,11 +459,6 @@ def test_process_message_defaults_legacy_document_to_submission(monkeypatch):
     monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
     monkeypatch.setattr(hosted_agent, "get_event_store", Events)
     monkeypatch.setattr(hosted_agent, "invoke_hosted_agent", fake_hosted)
-    monkeypatch.setattr(
-        hosted_agent,
-        "invoke_playground_agent",
-        lambda **kwargs: pytest.fail("playground agent was invoked"),
-    )
 
     asyncio.run(
         hosted_agent.process_message(
@@ -560,13 +475,13 @@ def test_process_message_defaults_legacy_document_to_submission(monkeypatch):
     assert invocations[0]["message"] == "大阪へ出張"
 
 
-def test_legacy_playground_route_is_normalized_to_submission():
+def test_legacy_mode_field_does_not_change_scenario_route():
     assert hosted_agent._conversation_route(
         {
             "scenario": "single_prompt_agent",
             "interaction_mode": "playground",
         }
-    ) == ("single_prompt_agent", "submission")
+    ) == "single_prompt_agent"
 
 
 def test_skips_message_claimed_by_another_replica(monkeypatch):

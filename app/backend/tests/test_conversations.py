@@ -22,19 +22,17 @@ class _ConversationStore:
         user_id,
         *,
         scenario,
-        interaction_mode,
     ):
         self.created.append(
             {
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "scenario": scenario,
-                "interaction_mode": interaction_mode,
             }
         )
 
 
-def test_conversation_creation_supports_both_submission_scenarios(monkeypatch):
+def test_conversation_creation_supports_both_scenarios(monkeypatch):
     store = _ConversationStore()
     monkeypatch.setattr(settings, "evaluation_mode", "stub")
     monkeypatch.setattr(settings, "app_environment", "development")
@@ -50,36 +48,18 @@ def test_conversation_creation_supports_both_submission_scenarios(monkeypatch):
         default_response = client.post("/api/conversations", json={})
         workflow_response = client.post(
             "/api/conversations",
-            json={
-                "scenario": "agent_framework_workflow",
-                "interaction_mode": "playground",
-            },
+            json={"scenario": "agent_framework_workflow"},
         )
         single_response = client.post(
             "/api/conversations",
-            json={
-                "scenario": "single_prompt_agent",
-                "interaction_mode": "playground",
-            },
-        )
-        single_submission_response = client.post(
-            "/api/conversations",
-            json={
-                "scenario": "single_prompt_agent",
-                "interaction_mode": "submission",
-            },
+            json={"scenario": "single_prompt_agent"},
         )
 
     assert default_response.status_code == 200
     assert workflow_response.status_code == 200
     assert single_response.status_code == 200
-    assert single_submission_response.status_code == 200
-    assert [
-        (item["scenario"], item["interaction_mode"])
-        for item in store.created
-    ] == [
-        ("agent_framework_workflow", "submission"),
-        ("agent_framework_workflow", "submission"),
-        ("single_prompt_agent", "submission"),
-        ("single_prompt_agent", "submission"),
+    assert [item["scenario"] for item in store.created] == [
+        "agent_framework_workflow",
+        "agent_framework_workflow",
+        "single_prompt_agent",
     ]

@@ -16,7 +16,6 @@ async def _test_local_conversation_store_claims_and_updates_messages():
         "conversation-1",
         "user-1",
         scenario="single_prompt_agent",
-        interaction_mode="playground",
     )
 
     assert await store.claim_message(
@@ -51,7 +50,6 @@ async def _test_local_conversation_store_claims_and_updates_messages():
     conversation = await store.get_owned("conversation-1", "user-1")
     assert conversation is not None
     assert conversation["scenario"] == "single_prompt_agent"
-    assert conversation["interaction_mode"] == "playground"
     assert conversation["status"] == "awaiting_input"
     assert await store.get_owned("conversation-1", "user-2") is None
 

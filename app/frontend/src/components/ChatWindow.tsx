@@ -214,9 +214,6 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
                 <CompletionCard
                   key={message.id}
                   data={message.completionData}
-                  isPlayground={
-                    conversationOptions?.interaction_mode === "playground"
-                  }
                 />
               );
             }

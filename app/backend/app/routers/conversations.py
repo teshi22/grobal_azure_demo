@@ -19,11 +19,6 @@ from app.services.hosted_agent import process_queued_message
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
-def _interactive_mode(requested_mode: str) -> str:
-    # The former playground route is now the same MCP-backed application flow.
-    return "submission" if requested_mode == "playground" else requested_mode
-
-
 @router.post("", response_model=ConversationResponse)
 async def create_conversation(
     request: CreateConversationRequest,
@@ -34,7 +29,6 @@ async def create_conversation(
         conversation_id,
         current_user["sub"],
         scenario=request.scenario,
-        interaction_mode=_interactive_mode(request.interaction_mode),
     )
     return ConversationResponse(
         conversation_id=conversation_id,

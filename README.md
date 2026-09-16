@@ -31,7 +31,7 @@ flowchart LR
     end
 
     subgraph Function["Azure Functions"]
-        MCP["MCP<br/>submit_travel_request"]
+        MCP["MCP<br/>prepare / submit"]
     end
 
     Cosmos[("Azure Cosmos DB<br/>会話・イベント<br/>申請・評価結果")]
@@ -62,7 +62,7 @@ flowchart LR
 | BFF | FastAPI | Entra ID認証、会話所有権、Responses APIとdurable SSEの通信中継、Datasetと評価runの管理 |
 | Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4つのPrompt AgentのオーケストレーションとHITL |
 | Prompt Agents | Foundry Agent Service | 専門処理4種と、確認、修正、最終承認、MCP実行を通常会話で管理する単一エージェントシナリオ |
-| MCP | Azure Functions | Agent Frameworkのgrant、またはSingle Prompt Agentが渡す明示承認フラグを検証した申請の冪等な登録 |
+| MCP | Azure Functions | Agent Frameworkのgrant検証と、Single Prompt Agentの申請内容固定・承認済み申請の冪等な登録 |
 | Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認grant、申請、評価ケースと結果 |
 | Observability | OpenTelemetry、Application Insights | BFF と Hosted Agent のトレース |
 | Infrastructure | Bicep、Azure Developer CLI | Japan East への一括デプロイと RBAC 設定 |
@@ -90,7 +90,9 @@ Prompt Agentは名前だけでなくversionも設定に保存します。プロ�
 
 両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正、申請書案の最終確認を画面内で行います。会話はシナリオごとに独立しているため、一方を操作しても他方の状態は変わりません。
 
-Agent Frameworkシナリオでは、BFFが利用者と承認済み旅程に結び付く短命approval grantを発行し、Hosted AgentがMCP `submit_travel_request`を呼びます。Single Prompt Agentシナリオでは、Prompt Agentが通常応答で最終確認し、利用者が明示的に承認した次のターンだけMCP `submit_travel_request_with_approval`を直接実行します。BFFは応答内容、確認段階、承認可否、MCP結果を解釈せず、利用者メッセージとPrompt Agentの応答をそのまま中継します。
+Agent Frameworkシナリオでは、BFFが利用者と承認済み旅程に結び付く短命approval grantを発行し、Hosted AgentがMCP `submit_travel_request`を呼びます。Single Prompt Agentシナリオでは、Prompt AgentがMCP `prepare_travel_request_submission`で申請内容を固定し、通常応答でその内容を最終確認します。利用者が明示的に承認した次のターンだけ、固定済みデータの`approval_id`を使って`submit_travel_request_with_approval`を直接実行します。BFFは応答内容、確認段階、承認可否、MCP結果を解釈せず、利用者メッセージとPrompt Agentの応答をそのまま中継します。
+
+Single Prompt Agentには`submission`や`playground`などの独自モードはありません。Foundry Playgroundでは通常のチャット文字列だけで会話から申請まで実行できます。Webアプリからは所有者連携のために任意の`conversation_id`を入力へ添えますが、BFF発行トークンは使用しません。
 
 | 画面 | 用途 |
 |---|---|
@@ -133,13 +135,14 @@ flowchart TD
     Rules --> Compliant{"規程に適合したか"}
     Compliant -->|不適合| Replan["違反理由を反映"] --> Plan
     Compliant -->|適合| Document["申請書を作成"]
-    Document --> FinalConfirm["通常応答で最終確認"]
+    Document --> Prepare["MCPで申請内容を固定"]
+    Prepare --> FinalConfirm["通常応答で固定内容を最終確認"]
     FinalConfirm -->|拒否| Cancel["送信せず終了"]
     FinalConfirm -->|承認| MCP["Prompt AgentからMCPを直接実行"]
     MCP --> Done["申請完了"]
 ```
 
-Single Prompt Agentは`request_info`や`mcp_approval_request`を使用しません。依頼確認、旅程レビュー、最終送信確認を通常のアシスタント応答で行い、次の利用者メッセージを`previous_response_id`で同じResponses会話へ渡します。明示承認を確認した場合だけ、Prompt Agentが`user_confirmed=true`を指定してMCPを直接実行します。BFFはResponses IDを保存しますが、応答内容や処理段階を解釈しません。
+Single Prompt Agentは`request_info`や`mcp_approval_request`を使用しません。依頼確認、旅程レビュー、最終送信確認を通常のアシスタント応答で行い、次の利用者メッセージを`previous_response_id`で同じResponses会話へ渡します。MCPのprepareツールは、申請書、構造化旅程、規程判定を短命approvalへ固定します。明示承認を確認した場合だけ、Prompt Agentが`approval_id`と`user_confirmed=true`をsubmitツールへ渡します。BFFはResponses IDを保存しますが、応答内容や処理段階を解釈しません。
 
 受け付けたメッセージも会話ドキュメントに保存し、BFF レプリカが lease を取得して処理します。レプリカが途中で停止した場合は、lease の期限後に別レプリカが残作業を引き継ぎます。
 
@@ -158,7 +161,7 @@ Agent Frameworkシナリオの送信承認後は、BFFが次の情報を持つ�
 - 冪等性キー
 - 有効期限
 
-Agent Framework用MCPはgrantの状態、有効期限、会話ID、旅程ハッシュを再検証します。Single Prompt AgentはFoundry Project Managed IdentityでMCPへ接続します。MCPは`user_confirmed=true`、BFFが作成した会話ID、不透明なsubmission tokenを検証して所有者を確認し、会話IDと旅程ハッシュから申請IDを決定して重複登録を防ぎます。
+Agent Framework用MCPはgrantの状態、有効期限、会話ID、旅程ハッシュを再検証します。Single Prompt AgentはFoundry Project Managed IdentityでMCPへ接続します。prepareツールは、Webアプリ経由では会話ドキュメントから認証済み所有者を解決し、Foundry Playgroundから会話IDなしで呼ばれた場合は`foundry-prompt-agent`を所有者として扱います。submitツールは短命approvalの状態と有効期限を検証し、固定済みデータだけを登録してapprovalを消費済みにします。
 
 ## リポジトリはBFF、Hosted Agent、MCPを分離している
 
@@ -347,8 +350,8 @@ python scripts/smoke-hosted-agent.py \
 |---|---|---|
 | `workflow-checkpoints` | `/workflow_name` | Agent Framework のチェックポイント |
 | `conversation-events` | `/conversation_id` | durable SSE イベント |
-| `conversations` | `/id` | 所有者、Responses ID、Single Prompt Agent用submission token |
-| `approval-grants` | `/id` | Agent Framework送信承認の短命grant |
+| `conversations` | `/id` | 所有者、シナリオ、Responses ID、処理中メッセージ |
+| `approval-grants` | `/id` | Agent Frameworkの送信grantとSingle Prompt Agentの固定済み申請 |
 | `travel-requests` | `/request_id` | 冪等に登録した申請 |
 | `evaluation-cases` | `/dataset_id` | 評価入力、期待値、タグ、版 |
 | `evaluation-runs` | `/id` | Datasetと2つのFoundry run、Agent version、集計 |

@@ -96,15 +96,12 @@ class ConversationStore:
         user_id: str,
         *,
         scenario: str = "agent_framework_workflow",
-        interaction_mode: str = "submission",
     ) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         item = {
             "id": conversation_id,
             "user_id": user_id,
             "scenario": scenario,
-            "interaction_mode": interaction_mode,
-            "submission_token": uuid.uuid4().hex,
             "status": "created",
             "foundry_response_id": None,
             "pending_request": None,
@@ -123,7 +120,6 @@ class ConversationStore:
         except CosmosResourceNotFoundError:
             return None
         item.setdefault("scenario", "agent_framework_workflow")
-        item.setdefault("interaction_mode", "submission")
         return item
 
     async def get_owned(self, conversation_id: str, user_id: str) -> dict | None:

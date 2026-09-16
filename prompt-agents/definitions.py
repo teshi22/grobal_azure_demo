@@ -282,7 +282,10 @@ def build_submission_mcp_tool(
         server_label="travel-request-submission",
         server_url=server_url,
         project_connection_id=connection_id,
-        allowed_tools=["submit_travel_request_with_approval"],
+        allowed_tools=[
+            "prepare_travel_request_submission",
+            "submit_travel_request_with_approval",
+        ],
         require_approval="never",
     )
 
@@ -317,8 +320,8 @@ PROMPT_AGENT_SPECS = (
     PromptAgentSpec(
         name="travel-request-single-agent",
         description=(
-            "Runs evaluation, HITL review, and MCP-backed submission as one "
-            "Prompt Agent scenario."
+            "Runs the complete conversational travel request and MCP "
+            "submission flow without application-defined modes."
         ),
         prompt_file="travel-request-single-agent.txt",
         web_search=True,
@@ -330,7 +333,7 @@ PROMPT_AGENT_SPECS = (
             "Runs the single Prompt Agent scenario with a strict evaluation "
             "response schema and no interactive or submission tools."
         ),
-        prompt_file="travel-request-single-agent.txt",
+        prompt_file="travel-request-single-evaluator.txt",
         response_schema=EVALUATION_OUTPUT_SCHEMA,
         response_schema_name="travel_evaluation_output",
         web_search=True,

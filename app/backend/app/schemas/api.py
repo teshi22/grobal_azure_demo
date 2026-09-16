@@ -8,14 +8,12 @@ ConversationScenario = Literal[
     "agent_framework_workflow",
     "single_prompt_agent",
 ]
-ConversationInteractionMode = Literal["submission", "playground"]
 
 
 class CreateConversationRequest(BaseModel):
     """Conversation identity is derived from the authenticated user."""
 
     scenario: ConversationScenario = "agent_framework_workflow"
-    interaction_mode: ConversationInteractionMode = "submission"
 
 
 class ConversationResponse(BaseModel):
