@@ -133,6 +133,7 @@ REQUEST_INFO_PARAMETERS_SCHEMA: dict[str, Any] = {
                 "clarification",
                 "request_confirmation",
                 "plan_review",
+                "submit_confirmation",
             ],
         },
         "message": {"type": "string"},
@@ -141,6 +142,20 @@ REQUEST_INFO_PARAMETERS_SCHEMA: dict[str, Any] = {
                 CLARIFICATION_DATA_SCHEMA,
                 EXTRACTED_REQUEST_SCHEMA,
                 TRAVEL_PLAN_SCHEMA,
+                {
+                    "type": "object",
+                    "properties": {
+                        "application_text": {"type": "string"},
+                        "plan": TRAVEL_PLAN_SCHEMA,
+                        "policy_result": {"type": "string"},
+                    },
+                    "required": [
+                        "application_text",
+                        "plan",
+                        "policy_result",
+                    ],
+                    "additionalProperties": False,
+                },
             ]
         },
     },
@@ -307,8 +322,8 @@ def build_request_info_tool() -> FunctionTool:
     return FunctionTool(
         name="request_info",
         description=(
-            "Pause the playground conversation for clarification, normalized "
-            "request confirmation, or travel plan review."
+            "Pause an interactive conversation for clarification, request "
+            "confirmation, travel plan review, or final submission approval."
         ),
         parameters=REQUEST_INFO_PARAMETERS_SCHEMA,
         strict=True,
@@ -344,7 +359,10 @@ PROMPT_AGENT_SPECS = (
     ),
     PromptAgentSpec(
         name="travel-request-single-agent",
-        description="Runs the side-effect-free single Prompt Agent evaluation scenario.",
+        description=(
+            "Runs evaluation, HITL review, and MCP-backed submission as one "
+            "Prompt Agent scenario."
+        ),
         prompt_file="travel-request-single-agent.txt",
         response_schema=EVALUATION_OUTPUT_SCHEMA,
         response_schema_name="travel_evaluation_output",

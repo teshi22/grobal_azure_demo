@@ -23,7 +23,7 @@ const SCENARIOS: ScenarioDefinition[] = [
     title: "Agent Framework ワークフロー",
     shortTitle: "Agent Framework",
     description:
-      "複数ステップで依頼を整理し、人の確認を挟みながら旅程と申請案を作成します。",
+      "専門エージェントを順番に実行し、最終承認後にMCPで申請を登録します。",
   },
   {
     id: "single_prompt_agent",
@@ -31,7 +31,7 @@ const SCENARIOS: ScenarioDefinition[] = [
     title: "Single Prompt Agent",
     shortTitle: "Single Prompt Agent",
     description:
-      "単一エージェントが同じ依頼を処理し、必要な場面で人に確認を求めます。",
+      "単一エージェントで処理し、最終承認後に同じMCPで申請を登録します。",
   },
 ];
 
@@ -42,7 +42,7 @@ const EMPTY_PANEL_STATE: ChatWindowState = {
   hasError: false,
 };
 
-export function ScenarioPlayground() {
+export function ScenarioApplication() {
   const [input, setInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isStartingBoth, setIsStartingBoth] = useState(false);
@@ -130,10 +130,10 @@ export function ScenarioPlayground() {
       <section className="play-input-card">
         <div className="play-input-heading">
           <div>
-            <p className="play-eyebrow">2-scenario interactive HITL</p>
-            <h2>同じ依頼から 2 つの対話を開始</h2>
+            <p className="play-eyebrow">2-scenario HITL application</p>
+            <h2>同じ依頼から 2 つの申請フローを開始</h2>
             <p>
-              共通の依頼で比較を始めた後は、確認への回答や追加メッセージを各パネルで個別に送れます。
+              各シナリオで内容を確認し、最終承認するとMCP経由で申請システムへ登録します。
             </p>
           </div>
           <button
@@ -157,7 +157,7 @@ export function ScenarioPlayground() {
             disabled={isStartingBoth}
             maxLength={16000}
             rows={4}
-            placeholder="例：10月15日に東京から大阪へ日帰りで出張したい。午前10時の顧客会議に間に合う新幹線を調べて、申請案を作成してください。"
+            placeholder="例：10月15日に東京から福岡へ日帰りで出張したい。午前10時の顧客会議に間に合う旅程を調べて、申請してください。"
           />
         </label>
 
@@ -211,7 +211,7 @@ export function ScenarioPlayground() {
             controlsDisabled={isStartingBoth}
             conversationOptions={{
               scenario: scenario.id,
-              interaction_mode: "playground",
+              interaction_mode: "submission",
             }}
             onStateChange={
               scenario.id === "agent_framework_workflow"

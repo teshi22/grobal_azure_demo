@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -18,8 +20,10 @@ from app.services.cosmos import (
 from app.services.foundry import (
     invoke_hosted_agent,
     invoke_playground_agent,
+    invoke_single_prompt_agent,
     response_to_dict,
 )
+from app.services.mcp_submission import submit_travel_request
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,15 @@ def _loads_object(value: Any) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     raise ValueError("Expected a JSON object")
+
+
+def _plan_hash(plan: dict[str, Any]) -> str:
+    serialized = json.dumps(
+        plan,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _extract_request_info(
@@ -106,13 +119,27 @@ def _extract_request_info(
             if not event_data:
                 event_data = _loads_object(payload.get("plan_json", "{}"))
         elif request_type == "submit_confirmation":
-            if not event_data:
-                event_data = {
-                    "application_text": payload.get("application_text", ""),
-                    "plan": _loads_object(payload.get("plan_json", "{}")),
-                    "policy_result": payload.get("policy_narrative", ""),
-                    "plan_hash": payload.get("plan_hash", ""),
-                }
+            plan = event_data.get("plan")
+            if not isinstance(plan, dict):
+                plan = _loads_object(payload.get("plan_json", "{}"))
+            plan_hash = str(
+                event_data.get("plan_hash")
+                or payload.get("plan_hash")
+                or _plan_hash(plan)
+            )
+            event_data = {
+                **event_data,
+                "application_text": str(
+                    event_data.get("application_text")
+                    or payload.get("application_text", "")
+                ),
+                "plan": plan,
+                "policy_result": str(
+                    event_data.get("policy_result")
+                    or payload.get("policy_narrative", "")
+                ),
+                "plan_hash": plan_hash,
+            }
 
         pending = {
             "call_id": str(item.get("call_id", "")),
@@ -153,10 +180,6 @@ def _conversation_route(conversation: dict[str, Any]) -> tuple[str, str]:
         raise ValueError(
             f"Unsupported conversation interaction mode: {interaction_mode}"
         )
-    if scenario == "single_prompt_agent" and interaction_mode == "submission":
-        raise ValueError(
-            "single_prompt_agent does not support submission mode"
-        )
     return scenario, interaction_mode
 
 
@@ -171,10 +194,19 @@ def _invoke_for_conversation(
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
 ):
-    if interaction_mode == "submission":
+    if scenario == "agent_framework_workflow" and interaction_mode == "submission":
         return invoke_hosted_agent(
             conversation_id=conversation_id,
             user_id=user_id,
+            message=message,
+            previous_response_id=previous_response_id,
+            function_call_id=function_call_id,
+            function_output=function_output,
+        )
+    if scenario == "single_prompt_agent":
+        return invoke_single_prompt_agent(
+            interaction_mode=interaction_mode,
+            conversation_id=conversation_id,
             message=message,
             previous_response_id=previous_response_id,
             function_call_id=function_call_id,
@@ -239,6 +271,102 @@ async def _build_function_output(
     }
 
 
+def _submission_event_data(pending: dict[str, Any]) -> dict[str, Any]:
+    data = pending.get("payload", {}).get("data", {})
+    if not isinstance(data, dict):
+        raise ValueError("Submission confirmation data is invalid")
+    plan = data.get("plan")
+    if not isinstance(plan, dict):
+        raise ValueError("Submission confirmation has no travel plan")
+    application_text = str(data.get("application_text", "")).strip()
+    policy_result = str(data.get("policy_result", "")).strip()
+    plan_hash = str(data.get("plan_hash", "")).strip()
+    if not application_text:
+        raise ValueError("Submission confirmation has no application text")
+    if not plan_hash:
+        raise ValueError("Submission confirmation has no plan hash")
+    return {
+        "application_text": application_text,
+        "plan": plan,
+        "policy_result": policy_result,
+        "plan_hash": plan_hash,
+    }
+
+
+async def _complete_single_prompt_submission(
+    *,
+    conversation_id: str,
+    user_id: str,
+    content: str,
+    message_id: str,
+    pending: dict[str, Any],
+    conversations: Any,
+    events: Any,
+) -> None:
+    if not _approved(content):
+        await conversations.update(
+            conversation_id,
+            status="completed",
+            pending_request=None,
+            active_message=None,
+            processing_lease_until=None,
+        )
+        await events.append(
+            conversation_id,
+            "complete",
+            {"output": "出張申請の送信をキャンセルしました。"},
+            message_id=message_id,
+        )
+        return
+
+    approval = await _build_function_output(
+        content=content,
+        pending=pending,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    data = _submission_event_data(pending)
+    result = await submit_travel_request(
+        {
+            "conversation_id": conversation_id,
+            "approval_grant_id": approval["approval_grant_id"],
+            "idempotency_key": approval["idempotency_key"],
+            "plan_hash": data["plan_hash"],
+            "application_text": data["application_text"],
+            "application_data": data["plan"],
+        }
+    )
+    request_id = str(result.get("request_id", ""))
+    output = (
+        f"{data['application_text']}\n\n"
+        "✅ 出張申請書を送信しました。"
+        f"（申請番号: {request_id}）"
+    ).strip()
+    await conversations.update(
+        conversation_id,
+        status="completed",
+        pending_request=None,
+        active_message=None,
+        processing_lease_until=None,
+    )
+    await events.append(
+        conversation_id,
+        "complete",
+        {
+            "output": output,
+            "request_id": request_id,
+            "plan": data["plan"],
+            "policy_display": data["policy_result"],
+        },
+        message_id=message_id,
+    )
+
+
+def _request_id_from_output(output: str) -> str:
+    match = re.search(r"申請番号:\s*([A-Z0-9-]+)", output)
+    return match.group(1) if match else ""
+
+
 async def process_message(
     *,
     conversation_id: str,
@@ -257,6 +385,21 @@ async def process_message(
 
         scenario, interaction_mode = _conversation_route(conversation)
         pending = conversation.get("pending_request")
+        if (
+            pending
+            and pending.get("type") == "submit_confirmation"
+            and scenario == "single_prompt_agent"
+        ):
+            await _complete_single_prompt_submission(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                content=content,
+                message_id=message_id,
+                pending=pending,
+                conversations=conversations,
+                events=events,
+            )
+            return
         if pending:
             function_output = await _build_function_output(
                 content=content,
@@ -323,10 +466,20 @@ async def process_message(
             active_message=None,
             processing_lease_until=None,
         )
+        completion_event: dict[str, Any] = {"output": output}
+        if pending and pending.get("type") == "submit_confirmation":
+            data = _submission_event_data(pending)
+            completion_event.update(
+                {
+                    "request_id": _request_id_from_output(output),
+                    "plan": data["plan"],
+                    "policy_display": data["policy_result"],
+                }
+            )
         await events.append(
             conversation_id,
             "complete",
-            {"output": output},
+            completion_event,
             message_id=message_id,
         )
     except Exception as exc:

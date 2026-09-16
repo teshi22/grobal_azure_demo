@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     cosmos_evaluation_run_container: str = "evaluation-runs"
     cosmos_evaluation_result_container: str = "evaluation-results"
 
+    # MCP submission service
+    mcp_tool_endpoint: str = ""
+    mcp_function_app_client_id: str = ""
+
     model_pricing_path: str = str(
         Path(__file__).resolve().parents[1] / "config" / "model-pricing.json"
     )

@@ -57,7 +57,7 @@ flowchart LR
 
 | コンポーネント | 実装 | 主な責務 |
 |---|---|---|
-| Frontend | Next.js 15、React 19 | チャット、2シナリオのHITL試行、申請一覧、比較評価 |
+| Frontend | Next.js 15、React 19 | 2シナリオのHITL申請、申請一覧、比較評価 |
 | BFF | FastAPI | Entra ID認証、会話所有権、シナリオ別の会話ルーティング、durable SSE、Datasetと評価runの管理 |
 | Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4つのPrompt AgentのオーケストレーションとHITL |
 | Prompt Agents | Foundry Agent Service | 専門処理4種と、`request_info`でHITLを行う単一エージェントシナリオ |
@@ -77,29 +77,29 @@ Hosted Agent 内の名前はチェックポイントとの互換性に関わる�
 
 Prompt Agentは名前だけでなくversionも設定に保存します。プロンプトやツール定義を変更した場合は新しいversionを作り、Hosted Agentと評価runへ同じversionを渡します。
 
-## まず2つのシナリオをアプリから試す
+## 2つのシナリオからHITL申請する
 
-`/playground`では、1つの自然言語入力から次の2つの会話を開始できます。両方を順番に開始することも、片方だけを開始することもできます。
+`/`では、1つの自然言語入力から次の2つの申請会話を開始できます。両方を順番に開始することも、片方だけを開始することもできます。
 
 | シナリオ | 実行内容 |
 |---|---|
 | Agent Framework workflow | Hosted Agent内のワークフローが処理順を制御し、4つの専門Prompt Agent、決定論的な規程判定、Agent Frameworkの`request_info`を組み合わせる |
 | Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web検索、規程判断、申請案作成を行い、FoundryのFunction Tool `request_info`で会話を中断・再開する |
 
-両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正を画面内で行います。会話と保留中のHITL要求はシナリオごとに独立して保存されるため、一方を操作しても他方の状態は変わりません。最終結果は依頼内容、旅程と運賃根拠、規程判定、申請案、引用元を同じ形式で表示します。
+両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正、申請書案の最終確認を画面内で行います。会話と保留中のHITL要求はシナリオごとに独立して保存されるため、一方を操作しても他方の状態は変わりません。
 
-この画面は比較評価runを作成せず、申請案の生成で停止します。会話状態はCosmos DBへ保存しますが、approval grantの発行、MCPによる送信、`travel-requests`への申請登録は行いません。実際に確認しながら申請を送信する場合は`/`の通常対話画面を使います。
+最終承認後は、BFFが利用者と承認済み旅程に結び付く短命approval grantを発行します。Agent FrameworkはHosted Agentから、Single Prompt AgentはBFFから、同じMCP `submit_travel_request`を呼び出します。MCP側でplan hash、grant、冪等性キーを検証してから`travel-requests`へ登録します。
 
 | 画面 | 用途 |
 |---|---|
-| `/` | Agent Frameworkによる通常対話、HITL、申請送信 |
-| `/playground` | 2シナリオのHITL会話を並べた副作用なし試行 |
+| `/` | 2シナリオのHITL会話とMCP申請 |
+| `/playground` | `/`と同じ統合申請画面（旧URL互換） |
 | `/requests` | 送信済み申請の確認 |
 | `/evaluations` | Datasetを使った詳細なバッチ比較評価 |
 
 ## 同じ20ケースで2つの構成を比較する
 
-`/evaluations`では次の2シナリオを同じDatasetで詳細比較します。まず応答を確認するだけなら、評価runを作成しない`/playground`を使ってください。
+`/evaluations`では次の2シナリオを同じDatasetで詳細比較します。
 
 | シナリオ | 構成 |
 |---|---|
@@ -290,7 +290,7 @@ cp hosted-agent/.env.example hosted-agent/.env
 
 Windows PowerShell では有効化コマンドを `.venv\Scripts\Activate.ps1` に読み替えてください。
 
-ローカル BFF は Entra 設定が空の場合だけ `dev-user` を使います。BFF の接続先は `app/backend/.env`、Hosted Agent の接続先は `hosted-agent/.env` に設定してください。`EVALUATION_MODE=stub`では会話とSSEイベントもインメモリ保存に切り替わるため、Cosmos DBの権限なしで2シナリオHITLプレイグラウンドを試せます。エージェント自体は`AZURE_AI_PROJECT_ENDPOINT`で指定したFoundryへ接続します。
+ローカル BFF は Entra 設定が空の場合だけ `dev-user` を使います。BFF の接続先は `app/backend/.env`、Hosted Agent の接続先は `hosted-agent/.env` に設定してください。`EVALUATION_MODE=stub`では会話とSSEイベントがインメモリ保存に切り替わるため、Cosmos DBの権限なしで最終送信確認まで試せます。MCP申請を完了するには、BFFとMCP Functionsが同じCosmos DBのapproval grantを参照できる構成が必要です。
 
 ```bash
 # BFF

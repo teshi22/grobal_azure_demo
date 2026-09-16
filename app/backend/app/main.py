@@ -93,9 +93,11 @@ async def lifespan(app: FastAPI):
                 await recovery_task
     from app.services.evaluation_foundry import close_evaluation_service
     from app.services.foundry import close_foundry_client
+    from app.services.mcp_submission import close_mcp_submission_client
 
     close_evaluation_service()
     close_foundry_client()
+    await close_mcp_submission_client()
     await close_cosmos_client()
     logger.info("Shutdown complete")
 

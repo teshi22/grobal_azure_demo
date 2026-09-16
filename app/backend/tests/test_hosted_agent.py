@@ -188,6 +188,30 @@ def test_single_prompt_resume_omits_session_and_user_identity(monkeypatch):
     assert "extra_headers" not in responses.kwargs
 
 
+def test_single_prompt_submission_uses_submission_envelope(monkeypatch):
+    responses = _CaptureResponses()
+    monkeypatch.setattr(settings, "single_prompt_agent_name", "prompt-agent")
+    monkeypatch.setattr(
+        foundry,
+        "get_agent_responses_client",
+        lambda agent_name: responses,
+    )
+
+    foundry.invoke_single_prompt_agent(
+        interaction_mode="submission",
+        conversation_id="conversation-1",
+        message="大阪へ出張",
+    )
+
+    assert json.loads(responses.kwargs["input"]) == {
+        "mode": "submission",
+        "conversation_id": "conversation-1",
+        "input": "大阪へ出張",
+    }
+    assert "extra_body" not in responses.kwargs
+    assert "extra_headers" not in responses.kwargs
+
+
 def test_extracts_request_confirmation_from_workflow_dataclass_shape():
     result = _extract_request_info(
         _response(
@@ -227,6 +251,34 @@ def test_extracts_submission_payload_for_ui_and_grant():
     assert pending["payload"]["data"]["plan_hash"] == "abc123"
     assert event["data"]["plan"] == plan
     assert event["data"]["policy_result"] == "規程適合"
+
+
+def test_extracts_direct_single_agent_submission_and_computes_plan_hash():
+    plan = {"departure": "大阪", "destination": "東京"}
+    result = _extract_request_info(
+        _direct_response(
+            {
+                "type": "submit_confirmation",
+                "message": "申請しますか。",
+                "data": {
+                    "application_text": "申請書",
+                    "plan": plan,
+                    "policy_result": "規程適合",
+                },
+            }
+        )
+    )
+
+    assert result is not None
+    pending, event = result
+    expected_hash = hosted_agent._plan_hash(plan)
+    assert pending["payload"]["data"]["plan_hash"] == expected_hash
+    assert event["data"] == {
+        "application_text": "申請書",
+        "plan": plan,
+        "policy_result": "規程適合",
+        "plan_hash": expected_hash,
+    }
 
 
 def test_extracts_serialized_request_confirmation_payload():
@@ -468,7 +520,7 @@ def test_process_message_routes_from_stored_single_prompt_conversation(
                 "output": [],
             }
 
-    def fake_playground(**kwargs):
+    def fake_single_prompt(**kwargs):
         invocations.append(kwargs)
         return Response()
 
@@ -476,8 +528,8 @@ def test_process_message_routes_from_stored_single_prompt_conversation(
     monkeypatch.setattr(hosted_agent, "get_event_store", Events)
     monkeypatch.setattr(
         hosted_agent,
-        "invoke_playground_agent",
-        fake_playground,
+        "invoke_single_prompt_agent",
+        fake_single_prompt,
     )
     monkeypatch.setattr(
         hosted_agent,
@@ -497,13 +549,169 @@ def test_process_message_routes_from_stored_single_prompt_conversation(
 
     assert invocations == [
         {
-            "scenario": "single_prompt_agent",
+            "interaction_mode": "playground",
             "conversation_id": "conversation-1",
             "message": "大阪へ出張",
             "previous_response_id": None,
             "function_call_id": None,
             "function_output": None,
         }
+    ]
+
+
+def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
+    plan = {
+        "departure": "東京",
+        "destination": "大阪",
+        "schedule": "2026-10-01",
+        "purpose": "顧客訪問",
+    }
+    plan_hash = hosted_agent._plan_hash(plan)
+    pending = {
+        "call_id": "submit-call-1",
+        "type": "submit_confirmation",
+        "payload": {
+            "data": {
+                "application_text": "出張申請書案",
+                "plan": plan,
+                "policy_result": "規程適合",
+                "plan_hash": plan_hash,
+            }
+        },
+    }
+    updates = []
+    emitted = []
+    submissions = []
+
+    class Store:
+        async def get_owned(self, conversation_id, user_id):
+            return {
+                "id": conversation_id,
+                "user_id": user_id,
+                "scenario": "single_prompt_agent",
+                "interaction_mode": "submission",
+                "foundry_response_id": "response-1",
+                "pending_request": pending,
+            }
+
+        async def update(self, conversation_id, **changes):
+            updates.append(changes)
+
+    class Events:
+        async def append(self, conversation_id, event_type, data, **kwargs):
+            emitted.append((event_type, data))
+
+    class GrantStore:
+        async def issue(self, **kwargs):
+            assert kwargs == {
+                "user_id": "user-1",
+                "conversation_id": "conversation-1",
+                "call_id": "submit-call-1",
+                "plan_hash": plan_hash,
+            }
+            return {"id": "grant-1", "idempotency_key": "mcp-key-1"}
+
+    async def fake_submit(arguments):
+        submissions.append(arguments)
+        return {"success": True, "request_id": "TR-ABC123"}
+
+    monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
+    monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(hosted_agent, "get_approval_grant_store", GrantStore)
+    monkeypatch.setattr(hosted_agent, "submit_travel_request", fake_submit)
+    monkeypatch.setattr(
+        hosted_agent,
+        "_invoke_for_conversation",
+        lambda **kwargs: pytest.fail("Foundry should not be resumed after submission"),
+    )
+
+    asyncio.run(
+        hosted_agent.process_message(
+            conversation_id="conversation-1",
+            user_id="user-1",
+            content="はい",
+            message_id="message-1",
+            idempotency_key="key-1",
+        )
+    )
+
+    assert submissions == [
+        {
+            "conversation_id": "conversation-1",
+            "approval_grant_id": "grant-1",
+            "idempotency_key": "mcp-key-1",
+            "plan_hash": plan_hash,
+            "application_text": "出張申請書案",
+            "application_data": plan,
+        }
+    ]
+    assert updates[-1]["status"] == "completed"
+    assert emitted == [
+        (
+            "complete",
+            {
+                "output": (
+                    "出張申請書案\n\n"
+                    "✅ 出張申請書を送信しました。（申請番号: TR-ABC123）"
+                ),
+                "request_id": "TR-ABC123",
+                "plan": plan,
+                "policy_display": "規程適合",
+            },
+        )
+    ]
+
+
+def test_single_prompt_submission_can_be_cancelled_without_mcp(monkeypatch):
+    pending = {
+        "call_id": "submit-call-1",
+        "type": "submit_confirmation",
+        "payload": {
+            "data": {
+                "application_text": "出張申請書案",
+                "plan": {"departure": "東京"},
+                "policy_result": "規程適合",
+                "plan_hash": "hash-1",
+            }
+        },
+    }
+    emitted = []
+
+    class Store:
+        async def get_owned(self, conversation_id, user_id):
+            return {
+                "scenario": "single_prompt_agent",
+                "interaction_mode": "submission",
+                "pending_request": pending,
+            }
+
+        async def update(self, conversation_id, **changes):
+            assert changes["status"] == "completed"
+            assert changes["pending_request"] is None
+
+    class Events:
+        async def append(self, conversation_id, event_type, data, **kwargs):
+            emitted.append((event_type, data))
+
+    async def fail_submit(arguments):
+        pytest.fail("MCP should not be called after cancellation")
+
+    monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
+    monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(hosted_agent, "submit_travel_request", fail_submit)
+
+    asyncio.run(
+        hosted_agent.process_message(
+            conversation_id="conversation-1",
+            user_id="user-1",
+            content="キャンセル",
+            message_id="message-1",
+            idempotency_key="key-1",
+        )
+    )
+
+    assert emitted == [
+        ("complete", {"output": "出張申請の送信をキャンセルしました。"})
     ]
 
 

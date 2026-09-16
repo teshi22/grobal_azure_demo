@@ -34,7 +34,7 @@ class _ConversationStore:
         )
 
 
-def test_conversation_creation_defaults_and_playground_scenarios(monkeypatch):
+def test_conversation_creation_supports_both_submission_scenarios(monkeypatch):
     store = _ConversationStore()
     monkeypatch.setattr(settings, "evaluation_mode", "stub")
     monkeypatch.setattr(settings, "app_environment", "development")
@@ -62,7 +62,7 @@ def test_conversation_creation_defaults_and_playground_scenarios(monkeypatch):
                 "interaction_mode": "playground",
             },
         )
-        unsupported_response = client.post(
+        single_submission_response = client.post(
             "/api/conversations",
             json={
                 "scenario": "single_prompt_agent",
@@ -73,7 +73,7 @@ def test_conversation_creation_defaults_and_playground_scenarios(monkeypatch):
     assert default_response.status_code == 200
     assert workflow_response.status_code == 200
     assert single_response.status_code == 200
-    assert unsupported_response.status_code == 422
+    assert single_submission_response.status_code == 200
     assert [
         (item["scenario"], item["interaction_mode"])
         for item in store.created
@@ -81,4 +81,5 @@ def test_conversation_creation_defaults_and_playground_scenarios(monkeypatch):
         ("agent_framework_workflow", "submission"),
         ("agent_framework_workflow", "playground"),
         ("single_prompt_agent", "playground"),
+        ("single_prompt_agent", "submission"),
     ]

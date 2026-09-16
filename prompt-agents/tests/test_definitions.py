@@ -95,6 +95,7 @@ def test_single_agent_has_web_search_and_strict_request_info_tools():
         "clarification",
         "request_confirmation",
         "plan_review",
+        "submit_confirmation",
     ]
     assert set(parameters["properties"]) == {"type", "message", "data"}
     assert "request_event" not in parameters["properties"]

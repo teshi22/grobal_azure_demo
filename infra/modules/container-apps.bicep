@@ -50,6 +50,12 @@ param singlePromptAgentName string = 'travel-request-single-agent'
 @description('単一 Prompt Agent バージョン')
 param singlePromptAgentVersion string = ''
 
+@description('MCP Streamable HTTPエンドポイント')
+param mcpToolEndpoint string = ''
+
+@description('MCP Functions用Entra IDアプリ登録のクライアントID')
+param mcpFunctionAppClientId string = ''
+
 @description('評価 Judge モデル名')
 param evaluationJudgeModel string
 
@@ -119,6 +125,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'HOSTED_AGENT_VERSION', value: hostedAgentVersion }
             { name: 'SINGLE_PROMPT_AGENT_NAME', value: singlePromptAgentName }
             { name: 'SINGLE_PROMPT_AGENT_VERSION', value: singlePromptAgentVersion }
+            { name: 'MCP_TOOL_ENDPOINT', value: mcpToolEndpoint }
+            { name: 'MCP_FUNCTION_APP_CLIENT_ID', value: mcpFunctionAppClientId }
             { name: 'EVALUATION_JUDGE_MODEL', value: evaluationJudgeModel }
             { name: 'ENTRA_TENANT_ID', value: entraTenantId }
             { name: 'ENTRA_CLIENT_ID', value: webEntraClientId }

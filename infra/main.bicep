@@ -212,6 +212,8 @@ module containerApps 'modules/container-apps.bicep' = {
     hostedAgentVersion: hostedAgentVersion
     singlePromptAgentName: singlePromptAgentName
     singlePromptAgentVersion: singlePromptAgentVersion
+    mcpToolEndpoint: functions.outputs.mcpEndpoint
+    mcpFunctionAppClientId: mcpEntraClientId
     evaluationJudgeModel: evaluationJudgeModel
     webEntraClientId: webEntraClientId
     entraTenantId: subscription().tenantId

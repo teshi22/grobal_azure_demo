@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 ConversationScenario = Literal[
     "agent_framework_workflow",
@@ -16,17 +16,6 @@ class CreateConversationRequest(BaseModel):
 
     scenario: ConversationScenario = "agent_framework_workflow"
     interaction_mode: ConversationInteractionMode = "submission"
-
-    @model_validator(mode="after")
-    def validate_scenario_mode(self):
-        if (
-            self.scenario == "single_prompt_agent"
-            and self.interaction_mode == "submission"
-        ):
-            raise ValueError(
-                "single_prompt_agent does not support submission mode"
-            )
-        return self
 
 
 class ConversationResponse(BaseModel):

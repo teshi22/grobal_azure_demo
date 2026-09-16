@@ -17,6 +17,7 @@ export function SubmitConfirmCard({
 }: Props) {
   const [checked, setChecked] = useState(false);
   const policyResult = (data.policy_result as string) || "";
+  const applicationText = (data.application_text as string) || "";
 
   return (
     <article className={`hitl-card ${disabled ? "is-disabled" : ""}`}>
@@ -27,6 +28,12 @@ export function SubmitConfirmCard({
           <p key={`${line}-${index}`}>{line}</p>
         ))}
       </div>
+      {applicationText && (
+        <details className="hitl-policy-box">
+          <summary>申請書案を確認</summary>
+          <pre className="completion-output">{applicationText}</pre>
+        </details>
+      )}
       {!disabled && (
         <label className="hitl-check-field">
           <input

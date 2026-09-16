@@ -36,6 +36,21 @@ export function CompletionCard({ data, isPlayground = false }: Props) {
     );
   }
 
+  const wasCancelled =
+    !data.requestId &&
+    !data.plan &&
+    data.output.includes("キャンセル");
+  if (wasCancelled) {
+    return (
+      <article className="chat-completion-card">
+        <div className="chat-card-heading">
+          <h3>申請送信をキャンセルしました</h3>
+        </div>
+        <p className="completion-message">{data.output}</p>
+      </article>
+    );
+  }
+
   const plan = data.plan || {};
   const legs = normalizeTransportationLegs(plan.transportation_legs);
   const tripType = (plan.trip_type as string) || "日帰り";
