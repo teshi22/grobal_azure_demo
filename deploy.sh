@@ -344,11 +344,25 @@ if [[ -z "$GIT_REVISION" ]]; then
   GIT_REVISION="$(date -u +%Y%m%d%H%M%S)"
 fi
 IMAGE_TAG="${IMAGE_NAME}:${GIT_REVISION}"
+BFF_BUILD_CONTEXT="${DEPLOY_WORK_DIR}/app-build"
+mkdir -p "${BFF_BUILD_CONTEXT}/backend" "${BFF_BUILD_CONTEXT}/frontend"
+cp app/Dockerfile "$BFF_BUILD_CONTEXT/"
+cp app/backend/requirements.txt "${BFF_BUILD_CONTEXT}/backend/"
+cp -R app/backend/app app/backend/config "${BFF_BUILD_CONTEXT}/backend/"
+cp app/frontend/package.json \
+  app/frontend/package-lock.json \
+  app/frontend/next.config.js \
+  app/frontend/postcss.config.mjs \
+  app/frontend/tsconfig.json \
+  app/frontend/next-env.d.ts \
+  "${BFF_BUILD_CONTEXT}/frontend/"
+cp -R app/frontend/src "${BFF_BUILD_CONTEXT}/frontend/"
+cat infra/bff-runtime-constraints.txt >> "${BFF_BUILD_CONTEXT}/backend/requirements.txt"
 az acr build \
   --registry "$ACR_NAME" \
   --image "$IMAGE_TAG" \
-  --file app/Dockerfile \
-  app \
+  --file "${BFF_BUILD_CONTEXT}/Dockerfile" \
+  "$BFF_BUILD_CONTEXT" \
   --output none
 az containerapp registry set \
   --name "$APP_NAME" \
