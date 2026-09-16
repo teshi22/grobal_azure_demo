@@ -17,6 +17,7 @@ from .models import (
     EvaluationOutput,
     EvaluationPolicyResult,
     ExtractedRequest,
+    PlaygroundInputEnvelope,
     PolicyOutcome,
     TravelPlan,
 )
@@ -30,6 +31,7 @@ class EvaluationStart:
 
 class EvaluationMode:
     _STATE_KEY = "evaluation_envelope"
+    _PLAYGROUND_STATE_KEY = "playground_envelope"
 
     def __init__(self, agent_versions: Mapping[str, str]) -> None:
         self._agent_versions = dict(agent_versions)
@@ -40,7 +42,26 @@ class EvaluationMode:
         except json.JSONDecodeError:
             self._leave(ctx)
             return EvaluationStart(input_text=text)
-        if not isinstance(payload, dict) or payload.get("mode") != "evaluation":
+        if not isinstance(payload, dict):
+            self._leave(ctx)
+            return EvaluationStart(input_text=text)
+
+        if payload.get("mode") == "playground":
+            try:
+                envelope = PlaygroundInputEnvelope.model_validate(payload)
+            except ValidationError:
+                self._leave(ctx)
+                return EvaluationStart(input_text=text)
+            self._leave(ctx)
+            self._reset_workflow_state(ctx)
+            ctx.set_state(
+                self._PLAYGROUND_STATE_KEY,
+                envelope.model_dump(),
+            )
+            ctx.set_state("conversation_id", envelope.conversation_id)
+            return EvaluationStart(input_text=envelope.input)
+
+        if payload.get("mode") != "evaluation":
             self._leave(ctx)
             return EvaluationStart(input_text=text)
 
@@ -61,6 +82,25 @@ class EvaluationMode:
                 output_json=output.model_dump_json(),
             )
 
+        self._leave(ctx)
+        self._reset_workflow_state(ctx)
+        ctx.set_state(self._STATE_KEY, envelope.model_dump())
+        return EvaluationStart(input_text=envelope.input)
+
+    def is_active(self, ctx: Any) -> bool:
+        return bool(ctx.get_state(self._STATE_KEY))
+
+    def is_playground(self, ctx: Any) -> bool:
+        return bool(ctx.get_state(self._PLAYGROUND_STATE_KEY))
+
+    def _leave(self, ctx: Any) -> None:
+        if self.is_active(ctx):
+            ctx.set_state(self._STATE_KEY, None)
+        if self.is_playground(ctx):
+            ctx.set_state(self._PLAYGROUND_STATE_KEY, None)
+
+    @staticmethod
+    def _reset_workflow_state(ctx: Any) -> None:
         for key in (
             "request_fields",
             "original_input",
@@ -68,15 +108,6 @@ class EvaluationMode:
             "approval_document",
         ):
             ctx.set_state(key, None)
-        ctx.set_state(self._STATE_KEY, envelope.model_dump())
-        return EvaluationStart(input_text=envelope.input)
-
-    def is_active(self, ctx: Any) -> bool:
-        return bool(ctx.get_state(self._STATE_KEY))
-
-    def _leave(self, ctx: Any) -> None:
-        if self.is_active(ctx):
-            ctx.set_state(self._STATE_KEY, None)
 
     def needs_clarification(
         self,
@@ -128,6 +159,31 @@ class EvaluationMode:
                 narrative=outcome.narrative,
             ),
             application_draft=document.application_text,
+            citations=self._citations(plan),
+        ).model_dump_json()
+
+    def playground_draft(
+        self,
+        ctx: Any,
+        document: ApprovalDocument,
+        outcome: PolicyOutcome,
+    ) -> str:
+        plan = TravelPlan.model_validate_json(document.plan_json)
+        envelope = ctx.get_state(self._PLAYGROUND_STATE_KEY) or {}
+        return self._output(
+            case_id=str(envelope.get("conversation_id", "")),
+            status="draft_ready",
+            request=self._request(ctx),
+            itinerary=plan,
+            policy=EvaluationPolicyResult(
+                compliant=outcome.compliant,
+                details=outcome.details,
+                narrative=outcome.narrative,
+            ),
+            application_draft=(
+                f"{document.application_text}\n\n"
+                "プレイグラウンドのため、出張申請は送信していません。"
+            ),
             citations=self._citations(plan),
         ).model_dump_json()
 

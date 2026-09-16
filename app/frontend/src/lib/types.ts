@@ -64,6 +64,17 @@ export interface ChatMessage {
   responded?: boolean;
 }
 
+export type ConversationScenario =
+  | "agent_framework_workflow"
+  | "single_prompt_agent";
+
+export type ConversationInteractionMode = "submission" | "playground";
+
+export interface CreateConversationOptions {
+  scenario: ConversationScenario;
+  interaction_mode: ConversationInteractionMode;
+}
+
 /** 出張申請データ */
 export interface TravelRequest {
   id: string;

@@ -76,6 +76,9 @@ class MessageToTextStep(Executor):
         if self._evaluation.is_active(ctx):
             await ctx.send_message(evaluation.input_text)
             return
+        if self._evaluation.is_playground(ctx):
+            await ctx.send_message(evaluation.input_text)
+            return
 
         try:
             envelope = json.loads(text)
@@ -380,6 +383,11 @@ class ApprovalDocumentStep(Executor):
         if self._evaluation.is_active(ctx):
             await ctx.yield_output(
                 self._evaluation.draft_ready(ctx, document, outcome)
+            )
+            return
+        if self._evaluation.is_playground(ctx):
+            await ctx.yield_output(
+                self._evaluation.playground_draft(ctx, document, outcome)
             )
             return
         await ctx.send_message(document)

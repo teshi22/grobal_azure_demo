@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from azure.ai.projects.models import (
+    FunctionTool,
     PromptAgentDefinition,
     PromptAgentDefinitionTextOptions,
     TextResponseFormatJsonSchema,
@@ -98,6 +99,52 @@ TRAVEL_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": TRAVEL_PLAN_PROPERTIES,
     "required": list(TRAVEL_PLAN_PROPERTIES),
+    "additionalProperties": False,
+}
+
+CLARIFICATION_DATA_PROPERTIES: dict[str, Any] = {
+    "missing_fields": {
+        "type": "array",
+        "items": {
+            "type": "string",
+            "enum": ["departure", "destination", "schedule", "purpose"],
+        },
+        "minItems": 1,
+    },
+    "departure": {"type": ["string", "null"]},
+    "destination": {"type": ["string", "null"]},
+    "schedule": {"type": ["string", "null"]},
+    "purpose": {"type": ["string", "null"]},
+}
+
+CLARIFICATION_DATA_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": CLARIFICATION_DATA_PROPERTIES,
+    "required": list(CLARIFICATION_DATA_PROPERTIES),
+    "additionalProperties": False,
+}
+
+REQUEST_INFO_PARAMETERS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": [
+                "clarification",
+                "request_confirmation",
+                "plan_review",
+            ],
+        },
+        "message": {"type": "string"},
+        "data": {
+            "anyOf": [
+                CLARIFICATION_DATA_SCHEMA,
+                EXTRACTED_REQUEST_SCHEMA,
+                TRAVEL_PLAN_SCHEMA,
+            ]
+        },
+    },
+    "required": ["type", "message", "data"],
     "additionalProperties": False,
 }
 
@@ -210,6 +257,7 @@ class PromptAgentSpec:
     response_schema: dict[str, Any] | None = None
     response_schema_name: str = ""
     web_search: bool = False
+    request_info: bool = False
     require_tool: bool = False
 
     @property
@@ -217,7 +265,11 @@ class PromptAgentSpec:
         return (PROMPTS_DIR / self.prompt_file).read_text(encoding="utf-8").strip()
 
     def build_definition(self, model: str) -> PromptAgentDefinition:
-        tools = [build_web_search_tool()] if self.web_search else None
+        tools = []
+        if self.web_search:
+            tools.append(build_web_search_tool())
+        if self.request_info:
+            tools.append(build_request_info_tool())
         text = None
         if self.response_schema is not None:
             text = PromptAgentDefinitionTextOptions(
@@ -230,7 +282,7 @@ class PromptAgentSpec:
         return PromptAgentDefinition(
             model=model,
             instructions=self.instructions,
-            tools=tools,
+            tools=tools or None,
             tool_choice="required" if self.require_tool else None,
             text=text,
         )
@@ -248,6 +300,18 @@ def build_web_search_tool() -> WebSearchTool:
             timezone="Asia/Tokyo",
         ),
         search_context_size="high",
+    )
+
+
+def build_request_info_tool() -> FunctionTool:
+    return FunctionTool(
+        name="request_info",
+        description=(
+            "Pause the playground conversation for clarification, normalized "
+            "request confirmation, or travel plan review."
+        ),
+        parameters=REQUEST_INFO_PARAMETERS_SCHEMA,
+        strict=True,
     )
 
 
@@ -285,5 +349,6 @@ PROMPT_AGENT_SPECS = (
         response_schema=EVALUATION_OUTPUT_SCHEMA,
         response_schema_name="travel_evaluation_output",
         web_search=True,
+        request_info=True,
     ),
 )

@@ -22,7 +22,7 @@ export default function Home() {
             HITL 申請
           </Link>
           <Link href="/playground/">
-            シナリオを試す
+            2シナリオHITL
           </Link>
           <Link href="/requests/">申請一覧</Link>
           <Link href="/evaluations/">高度な一括評価</Link>

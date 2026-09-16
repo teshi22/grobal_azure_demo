@@ -353,7 +353,7 @@ export default function EvaluationsPage() {
         </div>
         <nav aria-label="主要ナビゲーション" className="eval-page-nav">
           <Link href="/">HITL 申請</Link>
-          <Link href="/playground/">プレイグラウンド</Link>
+          <Link href="/playground/">2シナリオHITL</Link>
           <Link href="/requests/">申請一覧</Link>
           <Link href="/evaluations/" aria-current="page">
             高度な一括評価

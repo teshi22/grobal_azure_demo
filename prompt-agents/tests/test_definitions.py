@@ -33,6 +33,20 @@ def _assert_no_max_properties(value: Any) -> None:
             _assert_no_max_properties(child)
 
 
+def _assert_strict_object_schemas(value: Any) -> None:
+    if isinstance(value, dict):
+        if value.get("type") == "object":
+            assert value.get("additionalProperties") is False
+            assert set(value.get("required", [])) == set(
+                value.get("properties", {})
+            )
+        for child in value.values():
+            _assert_strict_object_schemas(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_strict_object_schemas(child)
+
+
 def test_prompt_agent_definitions_use_supported_strict_schemas():
     definitions = _load_definitions()
 
@@ -55,3 +69,52 @@ def test_prompt_agent_definitions_use_supported_strict_schemas():
         serialized = definition.as_dict()
         assert serialized["kind"] == "prompt"
         _assert_no_max_properties(serialized)
+
+
+def test_single_agent_has_web_search_and_strict_request_info_tools():
+    definitions = _load_definitions()
+    agent_spec = next(
+        spec
+        for spec in definitions.PROMPT_AGENT_SPECS
+        if spec.name == "travel-request-single-agent"
+    )
+
+    serialized = agent_spec.build_definition("gpt-test").as_dict()
+    tools = serialized["tools"]
+    assert {tool["type"] for tool in tools} == {"web_search", "function"}
+    assert "tool_choice" not in serialized
+
+    request_info = next(
+        tool
+        for tool in tools
+        if tool["type"] == "function" and tool["name"] == "request_info"
+    )
+    assert request_info["strict"] is True
+    parameters = request_info["parameters"]
+    assert parameters["properties"]["type"]["enum"] == [
+        "clarification",
+        "request_confirmation",
+        "plan_review",
+    ]
+    assert set(parameters["properties"]) == {"type", "message", "data"}
+    assert "request_event" not in parameters["properties"]
+    _assert_strict_object_schemas(parameters)
+
+
+def test_single_agent_evaluation_response_schema_is_foundry_compatible():
+    definitions = _load_definitions()
+    agent_spec = next(
+        spec
+        for spec in definitions.PROMPT_AGENT_SPECS
+        if spec.name == "travel-request-single-agent"
+    )
+
+    serialized = agent_spec.build_definition("gpt-test").as_dict()
+    response_format = serialized["text"]["format"]
+    assert response_format == {
+        "name": "travel_evaluation_output",
+        "schema": definitions.EVALUATION_OUTPUT_SCHEMA,
+        "strict": True,
+        "type": "json_schema",
+    }
+    _assert_no_max_properties(response_format["schema"])

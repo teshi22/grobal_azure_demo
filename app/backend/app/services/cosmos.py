@@ -85,16 +85,25 @@ def _get_container(container_name: str) -> ContainerProxy:
 
 
 class ConversationStore:
-    """Conversation ownership and Hosted Agent continuation state."""
+    """Conversation ownership and Foundry Agent continuation state."""
 
     def __init__(self):
         self._container = _get_container(settings.cosmos_conversation_container)
 
-    async def create(self, conversation_id: str, user_id: str) -> dict:
+    async def create(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        scenario: str = "agent_framework_workflow",
+        interaction_mode: str = "submission",
+    ) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         item = {
             "id": conversation_id,
             "user_id": user_id,
+            "scenario": scenario,
+            "interaction_mode": interaction_mode,
             "status": "created",
             "foundry_response_id": None,
             "pending_request": None,
@@ -106,12 +115,15 @@ class ConversationStore:
 
     async def get(self, conversation_id: str) -> dict | None:
         try:
-            return await self._container.read_item(
+            item = await self._container.read_item(
                 item=conversation_id,
                 partition_key=conversation_id,
             )
         except CosmosResourceNotFoundError:
             return None
+        item.setdefault("scenario", "agent_framework_workflow")
+        item.setdefault("interaction_mode", "submission")
+        return item
 
     async def get_owned(self, conversation_id: str, user_id: str) -> dict | None:
         item = await self.get(conversation_id)
@@ -233,7 +245,12 @@ class ConversationStore:
 def get_conversation_store() -> ConversationStore:
     global _conversation_store
     if _conversation_store is None:
-        _conversation_store = ConversationStore()
+        if settings.evaluation_mode == "stub":
+            from app.services.conversation_local import LocalConversationStore
+
+            _conversation_store = LocalConversationStore()
+        else:
+            _conversation_store = ConversationStore()
     return _conversation_store
 
 
@@ -315,7 +332,12 @@ class EventStore:
 def get_event_store() -> EventStore:
     global _event_store
     if _event_store is None:
-        _event_store = EventStore()
+        if settings.evaluation_mode == "stub":
+            from app.services.conversation_local import LocalEventStore
+
+            _event_store = LocalEventStore()
+        else:
+            _event_store = EventStore()
     return _event_store
 
 

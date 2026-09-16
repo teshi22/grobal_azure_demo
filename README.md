@@ -1,6 +1,6 @@
 # 出張申請エージェント比較アプリ
 
-自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進めるWebアプリケーションです。通常の対話画面に加え、Agent Frameworkワークフローと単一Prompt Agentへ同じ依頼を直接送り、それぞれの結果を試せる画面を備えています。バッチ評価は詳細検証用の別画面として残しています。
+自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進めるWebアプリケーションです。通常の対話画面に加え、Agent Frameworkワークフローと単一Prompt Agentの両方を、HITLを含む独立した会話として試せる画面を備えています。バッチ評価は詳細検証用の別画面として残しています。
 
 通常のエージェント処理は、**Microsoft Agent Frameworkで定義した1つのワークフロー**としてMicrosoft Foundry Hosted Agent上で実行します。依頼整理、旅程作成、規程説明、申請案作成は、versionを固定した4つのFoundry Prompt Agentが担当します。Azure Container Apps上のFastAPIは、認証、会話所有権、HITL（Human-in-the-Loop）、SSE配信、Foundryバッチ評価を受け持つBFFです。
 
@@ -25,7 +25,7 @@ flowchart LR
             Policy["Policy Checker"]
             Writer["Approval Writer"]
         end
-        Single["Single Prompt Agent<br/>比較シナリオ"]
+        Single["Single Prompt Agent<br/>request_info + Web Search"]
         Evaluation["Foundry Evaluation<br/>同一Dataset・同一rubric"]
         Model["GPT model deployment"]
     end
@@ -57,10 +57,10 @@ flowchart LR
 
 | コンポーネント | 実装 | 主な責務 |
 |---|---|---|
-| Frontend | Next.js 15、React 19 | チャット、2シナリオの手動試行、申請一覧、比較評価 |
-| BFF | FastAPI | Entra ID認証、会話所有権、2シナリオの直接呼び出し、durable SSE、Datasetと評価runの管理 |
+| Frontend | Next.js 15、React 19 | チャット、2シナリオのHITL試行、申請一覧、比較評価 |
+| BFF | FastAPI | Entra ID認証、会話所有権、シナリオ別の会話ルーティング、durable SSE、Datasetと評価runの管理 |
 | Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4つのPrompt AgentのオーケストレーションとHITL |
-| Prompt Agents | Foundry Agent Service | 専門処理4種と単一エージェント比較シナリオ |
+| Prompt Agents | Foundry Agent Service | 専門処理4種と、`request_info`でHITLを行う単一エージェントシナリオ |
 | MCP | Azure Functions | 承認済み申請の冪等な登録 |
 | Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認grant、申請、評価ケースと結果 |
 | Observability | OpenTelemetry、Application Insights | BFF と Hosted Agent のトレース |
@@ -79,21 +79,21 @@ Prompt Agentは名前だけでなくversionも設定に保存します。プロ�
 
 ## まず2つのシナリオをアプリから試す
 
-`/playground`では、1つの自然言語入力を次のどちらかへ直接送信できます。
+`/playground`では、1つの自然言語入力から次の2つの会話を開始できます。両方を順番に開始することも、片方だけを開始することもできます。
 
 | シナリオ | 実行内容 |
 |---|---|
-| Agent Framework workflow | Hosted Agent内のワークフローが4つの専門Prompt Agentと決定論的な規程判定を組み合わせる |
-| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web検索、規程判断、申請案作成までを処理する |
+| Agent Framework workflow | Hosted Agent内のワークフローが処理順を制御し、4つの専門Prompt Agent、決定論的な規程判定、Agent Frameworkの`request_info`を組み合わせる |
+| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web検索、規程判断、申請案作成を行い、FoundryのFunction Tool `request_info`で会話を中断・再開する |
 
-各シナリオは個別に実行でき、確認事項、依頼内容、旅程と運賃根拠、規程判定、申請案、引用元、所要時間、取得できる場合はトークン数を表示します。同じ入力を残したまま両方を順番に試せます。
+両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正を画面内で行います。会話と保留中のHITL要求はシナリオごとに独立して保存されるため、一方を操作しても他方の状態は変わりません。最終結果は依頼内容、旅程と運賃根拠、規程判定、申請案、引用元を同じ形式で表示します。
 
-この画面は比較評価runを作成せず、Cosmos DBへ申請を保存せず、MCPによる申請送信も行いません。Agent Framework側には評価モードのエンベロープを渡し、HITLを自動通過して申請案の生成で停止します。実際に確認しながら申請を送信する場合は`/`の通常対話画面を使います。
+この画面は比較評価runを作成せず、申請案の生成で停止します。会話状態はCosmos DBへ保存しますが、approval grantの発行、MCPによる送信、`travel-requests`への申請登録は行いません。実際に確認しながら申請を送信する場合は`/`の通常対話画面を使います。
 
 | 画面 | 用途 |
 |---|---|
 | `/` | Agent Frameworkによる通常対話、HITL、申請送信 |
-| `/playground` | 2シナリオの副作用なし手動試行 |
+| `/playground` | 2シナリオのHITL会話を並べた副作用なし試行 |
 | `/requests` | 送信済み申請の確認 |
 | `/evaluations` | Datasetを使った詳細なバッチ比較評価 |
 
@@ -290,7 +290,7 @@ cp hosted-agent/.env.example hosted-agent/.env
 
 Windows PowerShell では有効化コマンドを `.venv\Scripts\Activate.ps1` に読み替えてください。
 
-ローカル BFF は Entra 設定が空の場合だけ `dev-user` を使います。BFF の接続先は `app/backend/.env`、Hosted Agent の接続先は `hosted-agent/.env` に設定してください。
+ローカル BFF は Entra 設定が空の場合だけ `dev-user` を使います。BFF の接続先は `app/backend/.env`、Hosted Agent の接続先は `hosted-agent/.env` に設定してください。`EVALUATION_MODE=stub`では会話とSSEイベントもインメモリ保存に切り替わるため、Cosmos DBの権限なしで2シナリオHITLプレイグラウンドを試せます。エージェント自体は`AZURE_AI_PROJECT_ENDPOINT`で指定したFoundryへ接続します。
 
 ```bash
 # BFF

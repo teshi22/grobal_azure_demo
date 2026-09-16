@@ -10,6 +10,7 @@ import type {
   EvaluationRun,
   EvaluationScenario,
   HumanReview,
+  CreateConversationOptions,
   ScenarioRunRequest,
   ScenarioRunResponse,
   TravelRequest,
@@ -194,11 +195,13 @@ export interface MessageResult {
   status: string;
 }
 
-export async function createConversation(): Promise<Conversation> {
+export async function createConversation(
+  options?: CreateConversationOptions,
+): Promise<Conversation> {
   const res = await fetch(`${API_BASE}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(options ?? {}),
   });
   if (!res.ok) throw new Error(`Failed to create conversation: ${res.status}`);
   return res.json();

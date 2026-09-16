@@ -266,6 +266,12 @@ class EvaluationInputEnvelope(BaseModel):
     input: str = Field(min_length=1)
 
 
+class PlaygroundInputEnvelope(BaseModel):
+    mode: Literal["playground"]
+    conversation_id: str = Field(min_length=1)
+    input: str = Field(min_length=1)
+
+
 class EvaluationPolicyResult(BaseModel):
     compliant: bool | None = None
     details: list[str] = Field(default_factory=list)

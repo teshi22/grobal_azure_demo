@@ -50,18 +50,19 @@ def get_hosted_responses_client():
     return get_agent_responses_client(settings.hosted_agent_name)
 
 
-def invoke_hosted_agent(
+def invoke_conversation_agent(
     *,
-    conversation_id: str,
-    user_id: str,
-    message: str | None = None,
+    agent_name: str,
+    message_envelope: dict[str, Any] | None = None,
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
+    agent_session_id: str | None = None,
+    user_identity: str | None = None,
 ):
-    """Start or resume a Hosted Agent response for one authenticated user."""
-    if (message is None) == (function_output is None):
-        raise ValueError("Provide either message or function_output")
+    """Start or resume a durable Foundry Agent response."""
+    if (message_envelope is None) == (function_output is None):
+        raise ValueError("Provide either message_envelope or function_output")
 
     if function_output is not None:
         if not function_call_id:
@@ -74,24 +75,90 @@ def invoke_hosted_agent(
             }
         ]
     else:
-        response_input = json.dumps(
-            {
-                "conversation_id": conversation_id,
-                "message": message,
-            },
-            ensure_ascii=False,
-        )
+        response_input = json.dumps(message_envelope, ensure_ascii=False)
 
     kwargs: dict[str, Any] = {
         "input": response_input,
         "store": True,
         "stream": False,
-        "extra_body": {"agent_session_id": conversation_id},
-        "extra_headers": {"x-ms-user-identity": user_id},
     }
+    if agent_session_id:
+        kwargs["extra_body"] = {"agent_session_id": agent_session_id}
+    if user_identity:
+        kwargs["extra_headers"] = {"x-ms-user-identity": user_identity}
     if previous_response_id:
         kwargs["previous_response_id"] = previous_response_id
-    return get_hosted_responses_client().create(**kwargs)
+    responses = (
+        get_hosted_responses_client()
+        if agent_name == settings.hosted_agent_name
+        else get_agent_responses_client(agent_name)
+    )
+    return responses.create(**kwargs)
+
+
+def invoke_hosted_agent(
+    *,
+    conversation_id: str,
+    user_id: str,
+    message: str | None = None,
+    previous_response_id: str | None = None,
+    function_call_id: str | None = None,
+    function_output: dict[str, Any] | None = None,
+):
+    """Start or resume a Hosted Agent response for one authenticated user."""
+    return invoke_conversation_agent(
+        agent_name=settings.hosted_agent_name,
+        message_envelope=(
+            {
+                "conversation_id": conversation_id,
+                "message": message,
+            }
+            if message is not None
+            else None
+        ),
+        previous_response_id=previous_response_id,
+        function_call_id=function_call_id,
+        function_output=function_output,
+        agent_session_id=conversation_id,
+        user_identity=user_id,
+    )
+
+
+def invoke_playground_agent(
+    *,
+    scenario: str,
+    conversation_id: str,
+    message: str | None = None,
+    previous_response_id: str | None = None,
+    function_call_id: str | None = None,
+    function_output: dict[str, Any] | None = None,
+):
+    """Start or resume a side-effect-free playground conversation."""
+    if scenario == "agent_framework_workflow":
+        agent_name = settings.hosted_agent_name
+        agent_session_id = conversation_id
+    elif scenario == "single_prompt_agent":
+        agent_name = settings.single_prompt_agent_name
+        agent_session_id = None
+    else:
+        raise ValueError(f"Unsupported conversation scenario: {scenario}")
+
+    return invoke_conversation_agent(
+        agent_name=agent_name,
+        message_envelope=(
+            {
+                "mode": "playground",
+                "conversation_id": conversation_id,
+                "input": message,
+            }
+            if message is not None
+            else None
+        ),
+        previous_response_id=previous_response_id,
+        function_call_id=function_call_id,
+        function_output=function_output,
+        agent_session_id=agent_session_id,
+    )
 
 
 def invoke_scenario_agent(

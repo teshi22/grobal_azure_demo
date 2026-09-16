@@ -6,37 +6,82 @@ import {
   createEventSource,
   sendMessage,
 } from "@/lib/api";
-import type { ChatMessage, HITLRequestEvent, PolicyResultData, CompletionData } from "@/lib/types";
+import type {
+  ChatMessage,
+  CompletionData,
+  CreateConversationOptions,
+  HITLRequestEvent,
+  PolicyResultData,
+  StatusEvent,
+} from "@/lib/types";
 
-/** チャット状態管理フック — SSE 接続 + REST 応答 + 再接続 */
-export function useChat() {
+interface RetryState {
+  content: string;
+  idempotencyKey?: string;
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "通信に失敗しました。時間をおいて再度お試しください。";
+}
+
+/** チャット状態管理フック — 会話ごとに独立した SSE 接続と再試行状態を持つ */
+export function useChat(conversationOptions?: CreateConversationOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [hitlRequest, setHitlRequest] = useState<HITLRequestEvent | null>(
-    null,
-  );
+  const [hitlRequest, setHitlRequest] = useState<HITLRequestEvent | null>(null);
+  const [status, setStatus] = useState<StatusEvent | null>(null);
+  const [isComplete, setIsComplete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [canRetry, setCanRetry] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const lastEventIdRef = useRef("");
+  const conversationIdRef = useRef<string | null>(null);
+  const isLoadingRef = useRef(false);
+  const hitlRequestRef = useRef<HITLRequestEvent | null>(null);
+  const pendingHitlMessageIdRef = useRef<string | null>(null);
+  const retryRef = useRef<RetryState | null>(null);
+  const generationRef = useRef(0);
 
-  const addMessage = useCallback((msg: ChatMessage) => {
-    setMessages((prev) => [...prev, msg]);
+  const setLoading = useCallback((value: boolean) => {
+    isLoadingRef.current = value;
+    setIsLoading(value);
+  }, []);
+
+  const addMessage = useCallback((message: ChatMessage) => {
+    setMessages((current) => [...current, message]);
+  }, []);
+
+  const closeSSE = useCallback(() => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
   }, []);
 
   const connectSSE = useCallback(
-    (convId: string) => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-
-      const es = createEventSource(convId, lastEventIdRef.current || undefined);
+    (convId: string, generation: number) => {
+      closeSSE();
+      const es = createEventSource(
+        convId,
+        lastEventIdRef.current || undefined,
+      );
       eventSourceRef.current = es;
 
-      es.addEventListener("status", (e) => {
-        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
-        const data = JSON.parse(e.data);
+      const isCurrent = () => generationRef.current === generation;
+      const rememberEvent = (event: MessageEvent) => {
+        lastEventIdRef.current =
+          event.lastEventId || lastEventIdRef.current;
+      };
+
+      es.addEventListener("status", (event) => {
+        if (!isCurrent()) return;
+        const messageEvent = event as MessageEvent;
+        rememberEvent(messageEvent);
+        const data = JSON.parse(messageEvent.data) as StatusEvent;
+        setStatus(data);
         addMessage({
-          id: `status-${Date.now()}`,
+          id: `status-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: "system",
           content: data.label,
           timestamp: new Date(),
@@ -44,9 +89,11 @@ export function useChat() {
         });
       });
 
-      es.addEventListener("agent_response", (e) => {
-        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
-        const data = JSON.parse(e.data);
+      es.addEventListener("agent_response", (event) => {
+        if (!isCurrent()) return;
+        const messageEvent = event as MessageEvent;
+        rememberEvent(messageEvent);
+        const data = JSON.parse(messageEvent.data) as { content: string };
         addMessage({
           id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: "assistant",
@@ -56,9 +103,11 @@ export function useChat() {
         });
       });
 
-      es.addEventListener("policy_result", (e) => {
-        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
-        const data = JSON.parse(e.data) as PolicyResultData;
+      es.addEventListener("policy_result", (event) => {
+        if (!isCurrent()) return;
+        const messageEvent = event as MessageEvent;
+        rememberEvent(messageEvent);
+        const data = JSON.parse(messageEvent.data) as PolicyResultData;
         addMessage({
           id: `policy-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: "assistant",
@@ -69,26 +118,42 @@ export function useChat() {
         });
       });
 
-      es.addEventListener("hitl_request", (e) => {
-        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
-        const data = JSON.parse(e.data) as HITLRequestEvent;
-        // メッセージ配列に追加 (チャット履歴に残す)
+      es.addEventListener("hitl_request", (event) => {
+        if (!isCurrent()) return;
+        const messageEvent = event as MessageEvent;
+        rememberEvent(messageEvent);
+        const data = JSON.parse(messageEvent.data) as HITLRequestEvent;
+        const messageId =
+          `hitl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         addMessage({
-          id: `hitl-${Date.now()}`,
+          id: messageId,
           role: "assistant",
           content: "",
           timestamp: new Date(),
           eventType: "hitl_request",
           hitlData: data,
         });
+        hitlRequestRef.current = data;
+        pendingHitlMessageIdRef.current = messageId;
         setHitlRequest(data);
-        setIsLoading(false);
-        es.close();
+        setStatus({
+          step: data.type,
+          label: "あなたの入力を待っています",
+        });
+        setLoading(false);
+        closeSSE();
       });
 
-      es.addEventListener("complete", (e) => {
-        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current;
-        const data = JSON.parse(e.data);
+      es.addEventListener("complete", (event) => {
+        if (!isCurrent()) return;
+        const messageEvent = event as MessageEvent;
+        rememberEvent(messageEvent);
+        const data = JSON.parse(messageEvent.data) as {
+          output: string;
+          request_id?: string;
+          plan?: Record<string, unknown>;
+          policy_display?: string;
+        };
         const completion: CompletionData = {
           output: data.output,
           requestId: data.request_id,
@@ -103,83 +168,166 @@ export function useChat() {
           eventType: "complete",
           completionData: completion,
         });
-        setIsLoading(false);
+        hitlRequestRef.current = null;
+        pendingHitlMessageIdRef.current = null;
         setHitlRequest(null);
-        es.close();
+        setStatus({ step: "complete", label: "完了" });
+        setIsComplete(true);
+        setLoading(false);
+        closeSSE();
       });
 
-      es.addEventListener("error", (e) => {
-        if (e instanceof MessageEvent) {
-          lastEventIdRef.current =
-            e.lastEventId || lastEventIdRef.current;
-          const data = JSON.parse(e.data);
+      es.addEventListener("error", (event) => {
+        if (!isCurrent()) return;
+        if (event instanceof MessageEvent) {
+          rememberEvent(event);
+          const data = JSON.parse(event.data) as { message?: string };
+          const detail = data.message || "ストリームでエラーが発生しました。";
+          setError(detail);
           addMessage({
             id: `error-${Date.now()}`,
             role: "system",
-            content: `エラー: ${data.message}`,
+            content: `エラー: ${detail}`,
             timestamp: new Date(),
             eventType: "error",
           });
-          es.close();
+          setStatus({ step: "error", label: "エラー" });
+          closeSSE();
         }
-        setIsLoading(false);
+        setLoading(false);
       });
     },
-    [addMessage],
+    [addMessage, closeSSE, setLoading],
   );
 
-  useEffect(
-    () => () => {
-      eventSourceRef.current?.close();
-    },
-    [],
-  );
+  const reset = useCallback(() => {
+    generationRef.current += 1;
+    closeSSE();
+    conversationIdRef.current = null;
+    hitlRequestRef.current = null;
+    pendingHitlMessageIdRef.current = null;
+    retryRef.current = null;
+    lastEventIdRef.current = "";
+    isLoadingRef.current = false;
+    setMessages([]);
+    setConversationId(null);
+    setHitlRequest(null);
+    setStatus(null);
+    setIsComplete(false);
+    setError(null);
+    setCanRetry(false);
+    setIsLoading(false);
+  }, [closeSSE]);
 
-  const send = useCallback(
-    async (content: string) => {
-      setIsLoading(true);
+  useEffect(() => closeSSE, [closeSSE]);
 
-      addMessage({
-        id: `user-${Date.now()}`,
-        role: "user",
-        content,
-        timestamp: new Date(),
+  const performSend = useCallback(
+    async (
+      content: string,
+      appendUserMessage: boolean,
+      retryKey?: string,
+    ): Promise<boolean> => {
+      const trimmed = content.trim();
+      if (!trimmed || isLoadingRef.current) return false;
+
+      const hitlMessageBeingAnswered = pendingHitlMessageIdRef.current;
+      setLoading(true);
+      setError(null);
+      setCanRetry(false);
+      setIsComplete(false);
+      setStatus({
+        step: hitlMessageBeingAnswered ? "hitl_response" : "message",
+        label: hitlMessageBeingAnswered
+          ? "回答を送信中..."
+          : "リクエストを送信中...",
       });
-
+      if (appendUserMessage) {
+        addMessage({
+          id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          role: "user",
+          content: trimmed,
+          timestamp: new Date(),
+        });
+      }
+      const generation = generationRef.current;
+      let idempotencyKey = retryKey;
       try {
-        let convId = conversationId;
+        let convId = conversationIdRef.current;
         if (!convId) {
-          const conv = await createConversation();
-          convId = conv.conversation_id;
+          const conversation = await createConversation(conversationOptions);
+          if (generationRef.current !== generation) return false;
+          convId = conversation.conversation_id;
+          conversationIdRef.current = convId;
           setConversationId(convId);
         }
 
-        connectSSE(convId);
-        const idempotencyKey = `${convId}-${Date.now()}`;
-        await sendMessage(convId, content, idempotencyKey);
+        idempotencyKey ??=
+          `${convId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        retryRef.current = { content: trimmed, idempotencyKey };
+        connectSSE(convId, generation);
+        await sendMessage(convId, trimmed, idempotencyKey);
+        if (generationRef.current !== generation) return false;
 
-        if (hitlRequest) {
-          // 現在のHITLメッセージを responded に変更 (カードは残るがボタン無効化)
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.hitlData && !msg.responded ? { ...msg, responded: true } : msg,
+        retryRef.current = null;
+        setCanRetry(false);
+        if (hitlMessageBeingAnswered) {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === hitlMessageBeingAnswered
+                ? { ...message, responded: true }
+                : message,
             ),
           );
-          setHitlRequest(null);
+          if (pendingHitlMessageIdRef.current === hitlMessageBeingAnswered) {
+            pendingHitlMessageIdRef.current = null;
+            hitlRequestRef.current = null;
+            setHitlRequest(null);
+          }
         }
-      } catch (err) {
-        addMessage({
-          id: `error-${Date.now()}`,
-          role: "system",
-          content: `送信エラー: ${err}`,
-          timestamp: new Date(),
-          eventType: "error",
-        });
-        setIsLoading(false);
+        return true;
+      } catch (sendError) {
+        if (generationRef.current !== generation) return false;
+        closeSSE();
+        const detail = messageFromError(sendError);
+        retryRef.current = { content: trimmed, idempotencyKey };
+        setError(detail);
+        setCanRetry(true);
+        setStatus({ step: "error", label: "送信エラー" });
+        setLoading(false);
+        return false;
       }
     },
-    [conversationId, connectSSE, addMessage, hitlRequest],
+    [
+      addMessage,
+      closeSSE,
+      connectSSE,
+      conversationOptions,
+      setLoading,
+    ],
   );
 
-  return { messages, isLoading, hitlRequest, send };
+  const send = useCallback(
+    (content: string) => performSend(content, true),
+    [performSend],
+  );
+
+  const retry = useCallback(async (): Promise<boolean> => {
+    const pending = retryRef.current;
+    if (!pending) return false;
+    return performSend(pending.content, false, pending.idempotencyKey);
+  }, [performSend]);
+
+  return {
+    messages,
+    isLoading,
+    conversationId,
+    hitlRequest,
+    status,
+    isComplete,
+    error,
+    canRetry,
+    send,
+    retry,
+    reset,
+  };
 }

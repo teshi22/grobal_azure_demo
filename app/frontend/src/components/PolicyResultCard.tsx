@@ -7,34 +7,21 @@ interface Props {
 }
 
 export function PolicyResultCard({ data }: Props) {
-  const isCompliant = data.compliant;
-
-  const bgClass = isCompliant
-    ? "border-green-200 bg-green-50"
-    : "border-red-200 bg-red-50";
-  const textClass = isCompliant ? "text-green-800" : "text-red-800";
-  const icon = isCompliant ? "✅" : "❌";
-  const titleColor = isCompliant ? "text-green-700" : "text-red-700";
-
   return (
-    <div className={`rounded-xl border p-5 shadow-sm ${bgClass}`}>
-      <h3 className={`mb-3 text-base font-semibold ${titleColor}`}>
-        {icon} {data.summary}
+    <article
+      className={`chat-info-card ${
+        data.compliant ? "is-success" : "is-error"
+      }`}
+    >
+      <h3>
+        {data.compliant ? "✓" : "!"} {data.summary}
       </h3>
-
-      <div className={`space-y-1 text-sm ${textClass}`}>
-        {data.details.map((line, i) => (
-          <p key={i} className="ml-2">
-            {line}
-          </p>
+      <div>
+        {data.details.map((line, index) => (
+          <p key={`${line}-${index}`}>{line}</p>
         ))}
       </div>
-
-      {data.message && (
-        <p className={`mt-3 text-sm font-medium ${titleColor}`}>
-          🔄 {data.message}
-        </p>
-      )}
-    </div>
+      {data.message && <strong>↻ {data.message}</strong>}
+    </article>
   );
 }

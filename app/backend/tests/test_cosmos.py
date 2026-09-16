@@ -8,11 +8,57 @@ from azure.cosmos.exceptions import (
 )
 
 from app.services.cosmos import (
+    ConversationStore,
     EvaluationCaseStore,
     EvaluationResultStore,
     StoreConflictError,
     TravelRequestStore,
 )
+
+
+class _ConversationContainer:
+    def __init__(self):
+        self.item: dict | None = None
+
+    async def create_item(self, body):
+        self.item = copy.deepcopy(body)
+        return copy.deepcopy(body)
+
+    async def read_item(self, item, partition_key):
+        if (
+            self.item is None
+            or self.item["id"] != item
+            or partition_key != item
+        ):
+            raise CosmosResourceNotFoundError(status_code=404)
+        return copy.deepcopy(self.item)
+
+
+def test_conversation_store_persists_route_and_defaults_legacy_documents():
+    container = _ConversationContainer()
+    store = ConversationStore.__new__(ConversationStore)
+    store._container = container
+
+    created = asyncio.run(
+        store.create(
+            "conversation-1",
+            "user-1",
+            scenario="single_prompt_agent",
+            interaction_mode="playground",
+        )
+    )
+
+    assert created["scenario"] == "single_prompt_agent"
+    assert created["interaction_mode"] == "playground"
+
+    container.item = {
+        "id": "legacy-conversation",
+        "user_id": "user-1",
+        "status": "created",
+    }
+    legacy = asyncio.run(store.get("legacy-conversation"))
+    assert legacy["scenario"] == "agent_framework_workflow"
+    assert legacy["interaction_mode"] == "submission"
 
 
 class _AsyncItems:

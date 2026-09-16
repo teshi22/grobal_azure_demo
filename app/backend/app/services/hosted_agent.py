@@ -15,7 +15,11 @@ from app.services.cosmos import (
     get_conversation_store,
     get_event_store,
 )
-from app.services.foundry import invoke_hosted_agent, response_to_dict
+from app.services.foundry import (
+    invoke_hosted_agent,
+    invoke_playground_agent,
+    response_to_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +61,26 @@ def _loads_object(value: Any) -> dict[str, Any]:
 
 def _extract_request_info(
     response: dict[str, Any],
+    *,
+    allow_submit_confirmation: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     for item in response.get("output", []):
         if item.get("type") != "function_call" or item.get("name") != "request_info":
             continue
 
         arguments = _loads_object(item.get("arguments", "{}"))
-        request_event = _loads_object(arguments.get("request_event", {}))
-        raw_payload = request_event.get("data", request_event)
-        payload = _loads_object(raw_payload)
+        if "request_event" in arguments:
+            request_event = _loads_object(arguments["request_event"])
+            payload = _loads_object(request_event.get("data", request_event))
+        else:
+            payload = arguments
         request_type = str(payload.get("type", ""))
         if request_type not in _REQUEST_INFO_TYPES:
             raise ValueError(f"Unsupported HITL request type: {request_type}")
+        if request_type == "submit_confirmation" and not allow_submit_confirmation:
+            raise ValueError(
+                "Submission confirmation is not supported in playground mode"
+            )
 
         message = str(
             payload.get("message")
@@ -82,7 +94,10 @@ def _extract_request_info(
             event_data = {
                 **event_data,
                 "question": message,
-                "missing_fields": payload.get("missing_fields", []),
+                "missing_fields": payload.get(
+                    "missing_fields",
+                    event_data.get("missing_fields", []),
+                ),
             }
         elif request_type == "request_confirmation":
             if not event_data:
@@ -101,7 +116,9 @@ def _extract_request_info(
 
         pending = {
             "call_id": str(item.get("call_id", "")),
-            "request_id": str(arguments.get("request_id", "")),
+            "request_id": str(
+                arguments.get("request_id") or item.get("call_id", "")
+            ),
             "type": request_type,
             "payload": {**payload, "data": event_data},
         }
@@ -118,6 +135,59 @@ def _extract_request_info(
 
 def _approved(content: str) -> bool:
     return content.strip().lower() in _APPROVAL_WORDS
+
+
+def _conversation_route(conversation: dict[str, Any]) -> tuple[str, str]:
+    scenario = str(
+        conversation.get("scenario") or "agent_framework_workflow"
+    )
+    interaction_mode = str(
+        conversation.get("interaction_mode") or "submission"
+    )
+    if scenario not in {
+        "agent_framework_workflow",
+        "single_prompt_agent",
+    }:
+        raise ValueError(f"Unsupported conversation scenario: {scenario}")
+    if interaction_mode not in {"submission", "playground"}:
+        raise ValueError(
+            f"Unsupported conversation interaction mode: {interaction_mode}"
+        )
+    if scenario == "single_prompt_agent" and interaction_mode == "submission":
+        raise ValueError(
+            "single_prompt_agent does not support submission mode"
+        )
+    return scenario, interaction_mode
+
+
+def _invoke_for_conversation(
+    *,
+    scenario: str,
+    interaction_mode: str,
+    conversation_id: str,
+    user_id: str,
+    message: str | None = None,
+    previous_response_id: str | None = None,
+    function_call_id: str | None = None,
+    function_output: dict[str, Any] | None = None,
+):
+    if interaction_mode == "submission":
+        return invoke_hosted_agent(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            message=message,
+            previous_response_id=previous_response_id,
+            function_call_id=function_call_id,
+            function_output=function_output,
+        )
+    return invoke_playground_agent(
+        scenario=scenario,
+        conversation_id=conversation_id,
+        message=message,
+        previous_response_id=previous_response_id,
+        function_call_id=function_call_id,
+        function_output=function_output,
+    )
 
 
 async def _build_function_output(
@@ -177,7 +247,7 @@ async def process_message(
     message_id: str,
     idempotency_key: str,
 ) -> None:
-    """Invoke or resume the Hosted Agent and persist normalized UI events."""
+    """Invoke or resume the stored scenario and persist normalized UI events."""
     conversations = get_conversation_store()
     events = get_event_store()
     try:
@@ -185,6 +255,7 @@ async def process_message(
         if not conversation:
             raise LookupError("Conversation not found")
 
+        scenario, interaction_mode = _conversation_route(conversation)
         pending = conversation.get("pending_request")
         if pending:
             function_output = await _build_function_output(
@@ -194,7 +265,9 @@ async def process_message(
                 conversation_id=conversation_id,
             )
             response = await asyncio.to_thread(
-                invoke_hosted_agent,
+                _invoke_for_conversation,
+                scenario=scenario,
+                interaction_mode=interaction_mode,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 previous_response_id=conversation.get("foundry_response_id"),
@@ -203,7 +276,9 @@ async def process_message(
             )
         else:
             response = await asyncio.to_thread(
-                invoke_hosted_agent,
+                _invoke_for_conversation,
+                scenario=scenario,
+                interaction_mode=interaction_mode,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 message=content,
@@ -213,7 +288,10 @@ async def process_message(
         response_data = response_to_dict(response)
         _raise_for_response_error(response_data)
         response_id = str(response_data.get("id", ""))
-        request_info = _extract_request_info(response_data)
+        request_info = _extract_request_info(
+            response_data,
+            allow_submit_confirmation=interaction_mode == "submission",
+        )
         if request_info:
             next_pending, hitl_event = request_info
             await conversations.update(
@@ -252,7 +330,7 @@ async def process_message(
             message_id=message_id,
         )
     except Exception as exc:
-        logger.exception("Hosted Agent processing failed for %s", conversation_id)
+        logger.exception("Foundry Agent processing failed for %s", conversation_id)
         await conversations.update(
             conversation_id,
             status="failed",

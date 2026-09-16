@@ -21,11 +21,16 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 @router.post("", response_model=ConversationResponse)
 async def create_conversation(
-    _request: CreateConversationRequest,
+    request: CreateConversationRequest,
     current_user: CurrentUser,
 ):
     conversation_id = str(uuid.uuid4())
-    await get_conversation_store().create(conversation_id, current_user["sub"])
+    await get_conversation_store().create(
+        conversation_id,
+        current_user["sub"],
+        scenario=request.scenario,
+        interaction_mode=request.interaction_mode,
+    )
     return ConversationResponse(
         conversation_id=conversation_id,
         status="created",

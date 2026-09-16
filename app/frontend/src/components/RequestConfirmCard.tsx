@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 interface Props {
   data: Record<string, unknown>;
   disabled?: boolean;
@@ -14,57 +16,82 @@ const FIELD_CONFIG = [
   { key: "purpose", icon: "🎯", label: "目的" },
 ] as const;
 
-export function RequestConfirmCard({ data, disabled, onConfirm, onRevise }: Props) {
-  const handleRevise = () => {
-    const feedback = prompt("修正内容を入力してください:");
-    if (feedback) onRevise(feedback);
+export function RequestConfirmCard({
+  data,
+  disabled,
+  onConfirm,
+  onRevise,
+}: Props) {
+  const [isRevising, setIsRevising] = useState(false);
+  const [feedback, setFeedback] = useState("");
+
+  const submitRevision = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!feedback.trim() || disabled) return;
+    onRevise(feedback.trim());
+    setFeedback("");
+    setIsRevising(false);
   };
 
   return (
-    <div className={`rounded-xl border bg-white p-5 shadow-sm ${disabled ? "opacity-70" : ""}`}>
-      <h3 className="mb-3 text-base font-semibold">
-        📝 リクエスト内容の確認
-      </h3>
-
-      <div className="space-y-2 text-sm">
+    <article className={`hitl-card ${disabled ? "is-disabled" : ""}`}>
+      <h3>📝 リクエスト内容の確認</h3>
+      <dl className="hitl-detail-grid">
         {FIELD_CONFIG.map(({ key, icon, label }) => {
-          const value = data[key] as string | undefined;
-          if (!value) return null;
+          const value = data[key];
+          if (typeof value !== "string" || !value) return null;
           return (
-            <div key={key} className="flex items-start gap-2">
-              <span className="shrink-0">{icon}</span>
-              <span>
-                <span className="font-medium">{label}: </span>
-                {value}
-              </span>
+            <div key={key}>
+              <dt>
+                {icon} {label}
+              </dt>
+              <dd>{value}</dd>
             </div>
           );
         })}
-      </div>
-
+      </dl>
       {!disabled && (
-        <p className="mt-3 text-xs text-gray-500">
-          この内容で旅程を検索します。よろしいですか？
+        <p className="hitl-help">
+          この内容で旅程を検索します。内容を確認してください。
         </p>
       )}
-
-      <div className="mt-4 flex gap-3">
+      {!disabled && isRevising && (
+        <form className="hitl-inline-form" onSubmit={submitRevision}>
+          <input
+            value={feedback}
+            onChange={(event) => setFeedback(event.target.value)}
+            placeholder="修正内容を入力..."
+            autoFocus
+            aria-label="リクエストの修正内容"
+          />
+          <button
+            type="submit"
+            className="chat-primary-button"
+            disabled={!feedback.trim()}
+          >
+            修正を送信
+          </button>
+        </form>
+      )}
+      <div className="hitl-actions">
         <button
+          type="button"
           onClick={onConfirm}
           disabled={disabled}
-          className="rounded-lg bg-blue-600 px-5 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+          className="chat-primary-button"
         >
-          {disabled ? "✅ 確認済み" : "✅ この内容で検索"}
+          {disabled ? "✓ 確認済み" : "この内容で検索"}
         </button>
         {!disabled && (
           <button
-            onClick={handleRevise}
-            className="rounded-lg border px-5 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            type="button"
+            onClick={() => setIsRevising((value) => !value)}
+            className="chat-secondary-button"
           >
-            ✏️ 修正する
+            修正する
           </button>
         )}
       </div>
-    </div>
+    </article>
   );
 }

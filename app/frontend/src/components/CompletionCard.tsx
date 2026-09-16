@@ -5,12 +5,37 @@ import {
   normalizeTransportationLegs,
 } from "@/lib/travel";
 import type { CompletionData } from "@/lib/types";
+import {
+  CanonicalCompletionResult,
+  parseCanonicalOutput,
+} from "./CanonicalCompletionResult";
 
 interface Props {
   data: CompletionData;
+  isPlayground?: boolean;
 }
 
-export function CompletionCard({ data }: Props) {
+export function CompletionCard({ data, isPlayground = false }: Props) {
+  if (isPlayground) {
+    const canonicalOutput = parseCanonicalOutput(data.output);
+    if (canonicalOutput) {
+      return <CanonicalCompletionResult output={canonicalOutput} />;
+    }
+    return (
+      <article className="chat-completion-card">
+        <div className="chat-card-heading">
+          <h3>✓ 対話が完了しました</h3>
+        </div>
+        <p className="canonical-empty">
+          構造化された結果を表示できませんでした。再スタートしてもう一度お試しください。
+        </p>
+        <p className="completion-message">
+          完了データは受信しましたが、JSON の内容を画面表示用に解析できませんでした。
+        </p>
+      </article>
+    );
+  }
+
   const plan = data.plan || {};
   const legs = normalizeTransportationLegs(plan.transportation_legs);
   const tripType = (plan.trip_type as string) || "日帰り";
@@ -18,147 +43,109 @@ export function CompletionCard({ data }: Props) {
   const schedule = plan.schedule as string | undefined;
   const purpose = plan.purpose as string | undefined;
   const hotel = plan.hotel as string | undefined;
-  const transportCost = (plan.transportation_cost as number) || 0;
-  const hotelCostPerNight = (plan.hotel_cost_per_night as number) || 0;
+  const transportationCost = (plan.transportation_cost as number) || 0;
+  const hotelCost = (plan.hotel_cost_per_night as number) || 0;
   const hotelNights = (plan.hotel_nights as number) || 0;
-  const hotelTotal = hotelCostPerNight * hotelNights;
+  const hotelTotal = hotelCost * hotelNights;
   const dailyAllowance =
     tripType === "宿泊" ? 5000 * (hotelNights + 1) : 3000;
-  const grandTotal = transportCost + hotelTotal + dailyAllowance;
-
-  const hasPlan = legs.length > 0 || destination;
+  const total = transportationCost + hotelTotal + dailyAllowance;
+  const hasPlan = legs.length > 0 || Boolean(destination);
 
   return (
-    <div className="rounded-xl border-2 border-green-200 bg-gradient-to-b from-green-50 to-white p-5 shadow-sm">
-      {/* ヘッダー */}
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-base font-semibold">✅ 出張申請完了</h3>
-        {data.requestId && (
-          <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
-            申請番号: {data.requestId}
-          </span>
-        )}
+    <article className="chat-completion-card">
+      <div className="chat-card-heading">
+        <h3>✓ 出張申請完了</h3>
+        {data.requestId && <span>申請番号: {data.requestId}</span>}
       </div>
 
       {hasPlan ? (
         <>
-          {/* 基本情報 */}
-          <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
+          <dl className="hitl-detail-grid">
             {destination && (
               <div>
-                <span className="text-gray-500">出張先:</span>{" "}
-                <span className="font-medium">{destination}</span>
+                <dt>出張先</dt>
+                <dd>{destination}</dd>
               </div>
             )}
             {schedule && (
               <div>
-                <span className="text-gray-500">日程:</span>{" "}
-                <span className="font-medium">{schedule}</span>
+                <dt>日程</dt>
+                <dd>{schedule}</dd>
               </div>
             )}
             {purpose && (
               <div>
-                <span className="text-gray-500">目的:</span>{" "}
-                <span className="font-medium">{purpose}</span>
+                <dt>目的</dt>
+                <dd>{purpose}</dd>
               </div>
             )}
             <div>
-              <span className="text-gray-500">種別:</span>{" "}
-              <span className="font-medium">{tripType}</span>
+              <dt>種別</dt>
+              <dd>{tripType}</dd>
             </div>
-          </div>
+          </dl>
 
-          {/* 交通手段 */}
           {legs.length > 0 && (
-            <div className="mb-3">
-              <p className="mb-1 text-xs font-semibold text-gray-500">
-                🚄 交通手段
-              </p>
-              <div className="space-y-1 text-sm">
-                {legs.map((leg, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center justify-between rounded bg-gray-50 px-3 py-1"
-                  >
-                    <span>
-                      {i + 1}. {leg.method}{" "}
-                      <span className="text-gray-500">
-                        {leg.from} → {leg.to}
-                      </span>
-                      {leg.fareType && (
-                        <span className="ml-1 text-xs text-gray-500">
-                          ({leg.fareType})
-                        </span>
-                      )}
-                    </span>
-                    <span className="font-medium whitespace-nowrap">
-                      {formatTransportationCost(leg.cost)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 宿泊 */}
-          {tripType === "宿泊" && hotel && (
-            <div className="mb-3 text-sm">
-              <p className="mb-1 text-xs font-semibold text-gray-500">
-                🏨 宿泊
-              </p>
-              <div className="rounded bg-gray-50 px-3 py-1">
-                {hotel} — {hotelNights}泊 ¥
-                {hotelCostPerNight.toLocaleString()}/泊
-              </div>
-            </div>
-          )}
-
-          {/* 旅費規程チェック */}
-          {data.policyDisplay && (
-            <div className="mb-3 rounded-lg bg-green-50 px-4 py-2 text-sm text-green-800">
-              <p className="mb-1 text-xs font-semibold">📋 旅費規程チェック: OK</p>
-              {data.policyDisplay.split("\n").map((line, i) => (
-                <p key={i} className="ml-2 text-xs">
-                  {line}
-                </p>
+            <div className="completion-section">
+              <strong>🚄 交通手段</strong>
+              {legs.map((leg, index) => (
+                <div className="completion-leg" key={`${leg.from}-${index}`}>
+                  <span>
+                    {index + 1}. {leg.method} {leg.from} → {leg.to}
+                  </span>
+                  <strong>{formatTransportationCost(leg.cost)}</strong>
+                </div>
               ))}
             </div>
           )}
 
-          {/* 費用サマリー */}
-          <div className="rounded-lg bg-blue-50 px-4 py-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-600">交通費</span>
-              <span>¥{transportCost.toLocaleString()}</span>
+          {tripType === "宿泊" && hotel && (
+            <div className="hitl-summary-line">
+              <span>🏨 {hotel}・{hotelNights}泊</span>
+              <strong>¥{hotelTotal.toLocaleString()}</strong>
+            </div>
+          )}
+
+          {data.policyDisplay && (
+            <div className="hitl-policy-box">
+              <strong>📋 旅費規程チェック: OK</strong>
+              {data.policyDisplay.split("\n").map((line, index) => (
+                <p key={`${line}-${index}`}>{line}</p>
+              ))}
+            </div>
+          )}
+
+          <div className="hitl-cost-summary">
+            <div>
+              <span>交通費</span>
+              <strong>¥{transportationCost.toLocaleString()}</strong>
             </div>
             {hotelTotal > 0 && (
-              <div className="flex justify-between">
-                <span className="text-gray-600">宿泊費</span>
-                <span>¥{hotelTotal.toLocaleString()}</span>
+              <div>
+                <span>宿泊費</span>
+                <strong>¥{hotelTotal.toLocaleString()}</strong>
               </div>
             )}
-            <div className="flex justify-between">
-              <span className="text-gray-600">日当</span>
-              <span>¥{dailyAllowance.toLocaleString()}</span>
+            <div>
+              <span>日当</span>
+              <strong>¥{dailyAllowance.toLocaleString()}</strong>
             </div>
-            <div className="mt-1 flex justify-between border-t border-blue-200 pt-1 font-semibold text-blue-800">
+            <div className="is-total">
               <span>合計</span>
-              <span>¥{grandTotal.toLocaleString()}</span>
+              <strong>¥{total.toLocaleString()}</strong>
             </div>
           </div>
         </>
       ) : (
-        /* プランデータがない場合はテキスト表示 */
-        <pre className="whitespace-pre-wrap text-sm text-gray-700">
-          {data.output}
-        </pre>
+        <pre className="completion-output">{data.output}</pre>
       )}
 
-      {/* 完了メッセージ */}
-      <div className="mt-4 rounded-lg bg-green-100 px-4 py-2 text-center text-sm font-medium text-green-800">
-        🎉 出張申請書の作成が完了し、申請システムへ送信しました！
-        {data.requestId && `（申請番号: ${data.requestId}）`}
-      </div>
-    </div>
+      <p className="completion-message">
+        {`出張申請書を申請システムへ送信しました${
+          data.requestId ? `（申請番号: ${data.requestId}）` : ""
+        }。`}
+      </p>
+    </article>
   );
 }
