@@ -171,7 +171,10 @@ EVALUATION_OUTPUT_SCHEMA: dict[str, Any] = {
                 "case_id": {"type": "string"},
                 "agent_versions": {
                     "type": "object",
-                    "maxProperties": 0,
+                    "properties": {
+                        "single_prompt_agent": {"type": "string"},
+                    },
+                    "required": ["single_prompt_agent"],
                     "additionalProperties": False,
                 },
             },

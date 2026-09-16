@@ -239,13 +239,13 @@ OIDC 用の GitHub Secrets:
 | `AZURE_CLIENT_ID` | GitHub OIDC で使うサービスプリンシパルの client ID |
 | `AZURE_TENANT_ID` | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | デプロイ先 subscription ID |
-| `MCP_ENTRA_CLIENT_ID` | MCP Functions を表す Entra アプリの client ID |
-| `WEB_ENTRA_CLIENT_ID` | Container Apps Easy Auth 用 Entra アプリの client ID |
 
 任意の GitHub Variables:
 
 | Variable | 既定値 |
 |---|---|
+| `MCP_ENTRA_CLIENT_ID` | MCP Functionsを表すEntraアプリのclient ID。既存secretも後方互換で利用可能 |
+| `WEB_ENTRA_CLIENT_ID` | Container Apps Easy Auth用Entraアプリのclient ID。既存secretも後方互換で利用可能 |
 | `AZURE_ENV_NAME` | `travel-agent-prod` |
 | `AZURE_RESOURCE_GROUP` | `rg-travel-agent-hosted-demo` |
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `gpt-5.4` |
