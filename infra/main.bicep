@@ -143,6 +143,7 @@ resource foundryProjectRef 'Microsoft.CognitiveServices/accounts/projects@2025-0
 }
 
 var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+var cognitiveServicesOpenAIUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 
 // バッチ評価はプロジェクトの Managed Identity で実行される。
 resource projectFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -210,6 +211,20 @@ resource appFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       foundryUserRoleId
+    )
+    principalId: containerApps.outputs.appPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// カスタム評価器の LLM Judge は BFF の資格情報で Responses API を呼び出す。
+resource appOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(foundryAccountRef.id, envName, 'bff-llm-judge', cognitiveServicesOpenAIUserRoleId)
+  scope: foundryAccountRef
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      cognitiveServicesOpenAIUserRoleId
     )
     principalId: containerApps.outputs.appPrincipalId
     principalType: 'ServicePrincipal'
