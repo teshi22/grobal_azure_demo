@@ -157,6 +157,16 @@ async def health():
 if STATIC_DIR.exists():
     app.mount("/_next", StaticFiles(directory=STATIC_DIR / "_next"), name="next-assets")
 
+    def frontend_file(path: Path, media_type: str | None = None):
+        headers = None
+        if path.suffix == ".html":
+            headers = {
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+        return FileResponse(path, media_type=media_type, headers=headers)
+
     @app.get("/{full_path:path}")
     async def serve_frontend(request: Request, full_path: str):
         """SPA フォールバック: 静的ファイルがあればそれを返し、なければ index.html"""
@@ -166,14 +176,14 @@ if STATIC_DIR.exists():
         if file_path.is_dir():
             index = file_path / "index.html"
             if index.is_file():
-                return FileResponse(index, media_type="text/html")
+                return frontend_file(index, media_type="text/html")
 
         if file_path.is_file():
-            return FileResponse(file_path)
+            return frontend_file(file_path)
 
         # SPA フォールバック → index.html
         index_html = STATIC_DIR / "index.html"
         if index_html.is_file():
-            return FileResponse(index_html, media_type="text/html")
+            return frontend_file(index_html, media_type="text/html")
 
         return HTMLResponse("Not Found", status_code=404)

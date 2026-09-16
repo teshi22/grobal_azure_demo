@@ -79,7 +79,7 @@ def test_conversation_creation_supports_both_submission_scenarios(monkeypatch):
         for item in store.created
     ] == [
         ("agent_framework_workflow", "submission"),
-        ("agent_framework_workflow", "playground"),
-        ("single_prompt_agent", "playground"),
+        ("agent_framework_workflow", "submission"),
+        ("single_prompt_agent", "submission"),
         ("single_prompt_agent", "submission"),
     ]

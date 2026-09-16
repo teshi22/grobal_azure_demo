@@ -180,6 +180,8 @@ def _conversation_route(conversation: dict[str, Any]) -> tuple[str, str]:
         raise ValueError(
             f"Unsupported conversation interaction mode: {interaction_mode}"
         )
+    if interaction_mode == "playground":
+        interaction_mode = "submission"
     return scenario, interaction_mode
 
 

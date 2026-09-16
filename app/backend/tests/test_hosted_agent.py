@@ -485,7 +485,7 @@ def test_processes_claimed_durable_message(monkeypatch):
     assert processed == [{"conversation_id": "conversation-1", **message}]
 
 
-def test_process_message_routes_from_stored_single_prompt_conversation(
+def test_process_message_upgrades_stored_single_prompt_playground_conversation(
     monkeypatch,
 ):
     invocations = []
@@ -549,7 +549,7 @@ def test_process_message_routes_from_stored_single_prompt_conversation(
 
     assert invocations == [
         {
-            "interaction_mode": "playground",
+            "interaction_mode": "submission",
             "conversation_id": "conversation-1",
             "message": "大阪へ出張",
             "previous_response_id": None,
@@ -771,6 +771,15 @@ def test_process_message_defaults_legacy_document_to_submission(monkeypatch):
     assert invocations[0]["conversation_id"] == "conversation-1"
     assert invocations[0]["user_id"] == "user-1"
     assert invocations[0]["message"] == "大阪へ出張"
+
+
+def test_legacy_playground_route_is_normalized_to_submission():
+    assert hosted_agent._conversation_route(
+        {
+            "scenario": "single_prompt_agent",
+            "interaction_mode": "playground",
+        }
+    ) == ("single_prompt_agent", "submission")
 
 
 def test_skips_message_claimed_by_another_replica(monkeypatch):
