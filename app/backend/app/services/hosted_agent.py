@@ -37,10 +37,6 @@ _REQUEST_INFO_TYPES = frozenset(
         "submit_confirmation",
     }
 )
-_MCP_SERVER_LABEL = "travel-request-submission"
-_MCP_SUBMISSION_TOOL = "submit_travel_request_with_approval"
-
-
 def _raise_for_response_error(response: dict[str, Any]) -> None:
     error = response.get("error")
     if not error and response.get("status") != "failed":
@@ -161,49 +157,6 @@ def _extract_request_info(
     return None
 
 
-def _extract_mcp_approval(
-    response: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    for item in response.get("output", []):
-        if item.get("type") != "mcp_approval_request":
-            continue
-        if item.get("server_label") != _MCP_SERVER_LABEL:
-            raise ValueError("Unexpected MCP approval server")
-        if item.get("name") != _MCP_SUBMISSION_TOOL:
-            raise ValueError("Unexpected MCP approval tool")
-
-        arguments = _loads_object(item.get("arguments", "{}"))
-        plan = arguments.get("application_data")
-        if not isinstance(plan, dict):
-            raise ValueError("MCP submission approval has no travel plan")
-        application_text = str(arguments.get("application_text", "")).strip()
-        if not application_text:
-            raise ValueError("MCP submission approval has no application text")
-        approval_request_id = str(item.get("id", "")).strip()
-        if not approval_request_id:
-            raise ValueError("MCP approval request has no ID")
-
-        data = {
-            "application_text": application_text,
-            "plan": plan,
-            "policy_result": str(arguments.get("policy_result", "")).strip(),
-            "plan_hash": _plan_hash(plan),
-        }
-        pending = {
-            "call_id": approval_request_id,
-            "request_id": approval_request_id,
-            "type": "mcp_approval",
-            "payload": {"data": data},
-        }
-        event = {
-            "type": "submit_confirmation",
-            "message": "この内容で出張申請を送信しますか？",
-            "data": data,
-        }
-        return pending, event
-    return None
-
-
 def _approved(content: str) -> bool:
     return content.strip().lower() in _APPROVAL_WORDS
 
@@ -240,8 +193,6 @@ def _invoke_for_conversation(
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
-    mcp_approval_request_id: str | None = None,
-    mcp_approved: bool | None = None,
 ):
     if scenario == "agent_framework_workflow" and interaction_mode == "submission":
         return invoke_hosted_agent(
@@ -251,8 +202,6 @@ def _invoke_for_conversation(
             previous_response_id=previous_response_id,
             function_call_id=function_call_id,
             function_output=function_output,
-            mcp_approval_request_id=mcp_approval_request_id,
-            mcp_approved=mcp_approved,
         )
     if scenario == "single_prompt_agent":
         return invoke_single_prompt_agent(
@@ -261,10 +210,6 @@ def _invoke_for_conversation(
             submission_token=submission_token,
             message=message,
             previous_response_id=previous_response_id,
-            function_call_id=function_call_id,
-            function_output=function_output,
-            mcp_approval_request_id=mcp_approval_request_id,
-            mcp_approved=mcp_approved,
         )
     return invoke_playground_agent(
         scenario=scenario,
@@ -273,8 +218,6 @@ def _invoke_for_conversation(
         previous_response_id=previous_response_id,
         function_call_id=function_call_id,
         function_output=function_output,
-        mcp_approval_request_id=mcp_approval_request_id,
-        mcp_approved=mcp_approved,
     )
 
 
@@ -288,15 +231,6 @@ async def _build_function_output(
 ) -> dict[str, Any]:
     request_type = pending["type"]
     approved = _approved(content)
-
-    if scenario == "single_prompt_agent":
-        if request_type not in {
-            "clarification",
-            "request_confirmation",
-            "plan_review",
-        }:
-            raise ValueError(f"Unsupported single-agent request: {request_type}")
-        return {"response": content.strip()}
 
     if request_type == "clarification":
         return {"answer": content.strip()}
@@ -364,36 +298,6 @@ def _request_id_from_output(output: str) -> str:
     return match.group(1) if match else ""
 
 
-def _mcp_request_id(response: dict[str, Any]) -> str:
-    for item in response.get("output", []):
-        if (
-            item.get("type") != "mcp_call"
-            or item.get("server_label") != _MCP_SERVER_LABEL
-            or item.get("name") != _MCP_SUBMISSION_TOOL
-        ):
-            continue
-        if item.get("error"):
-            raise RuntimeError(f"MCP submission failed: {item['error']}")
-        raw_output = item.get("output")
-        if not raw_output:
-            raise RuntimeError("MCP submission returned no output")
-        payload = _loads_object(raw_output)
-        if "content" in payload and isinstance(payload["content"], list):
-            content = payload["content"]
-            if not content or not isinstance(content[0], dict):
-                raise RuntimeError("MCP submission returned invalid content")
-            payload = _loads_object(content[0].get("text", ""))
-        if not payload.get("success"):
-            raise RuntimeError(
-                str(payload.get("message") or "MCP submission failed")
-            )
-        request_id = str(payload.get("request_id", "")).strip()
-        if not request_id:
-            raise RuntimeError("MCP submission returned no request ID")
-        return request_id
-    return ""
-
-
 async def process_message(
     *,
     conversation_id: str,
@@ -415,38 +319,30 @@ async def process_message(
             conversation.get("submission_token") or conversation_id
         )
         pending = conversation.get("pending_request")
+        if scenario == "single_prompt_agent" and pending:
+            raise RuntimeError(
+                "This conversation uses the previous HITL format. "
+                "Reset it to start a Prompt Agent-only conversation."
+            )
         if pending:
-            if pending.get("type") == "mcp_approval":
-                response = await asyncio.to_thread(
-                    _invoke_for_conversation,
-                    scenario=scenario,
-                    interaction_mode=interaction_mode,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    submission_token=submission_token,
-                    previous_response_id=conversation.get("foundry_response_id"),
-                    mcp_approval_request_id=pending["call_id"],
-                    mcp_approved=_approved(content),
-                )
-            else:
-                function_output = await _build_function_output(
-                    content=content,
-                    pending=pending,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    scenario=scenario,
-                )
-                response = await asyncio.to_thread(
-                    _invoke_for_conversation,
-                    scenario=scenario,
-                    interaction_mode=interaction_mode,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    submission_token=submission_token,
-                    previous_response_id=conversation.get("foundry_response_id"),
-                    function_call_id=pending["call_id"],
-                    function_output=function_output,
-                )
+            function_output = await _build_function_output(
+                content=content,
+                pending=pending,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                scenario=scenario,
+            )
+            response = await asyncio.to_thread(
+                _invoke_for_conversation,
+                scenario=scenario,
+                interaction_mode=interaction_mode,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                submission_token=submission_token,
+                previous_response_id=conversation.get("foundry_response_id"),
+                function_call_id=pending["call_id"],
+                function_output=function_output,
+            )
         else:
             response = await asyncio.to_thread(
                 _invoke_for_conversation,
@@ -462,14 +358,49 @@ async def process_message(
         response_data = response_to_dict(response)
         _raise_for_response_error(response_data)
         response_id = str(response_data.get("id", ""))
+        output = str(
+            response_data.get("output_text")
+            or getattr(response, "output_text", "")
+            or ""
+        ).strip()
+
+        if scenario == "single_prompt_agent":
+            unexpected_callbacks = {
+                "function_call",
+                "mcp_approval_request",
+            }.intersection(
+                str(item.get("type", ""))
+                for item in response_data.get("output", [])
+            )
+            if unexpected_callbacks:
+                raise RuntimeError(
+                    "Single Prompt Agent returned an unsupported callback: "
+                    + ", ".join(sorted(unexpected_callbacks))
+                )
+            if not output:
+                raise RuntimeError("Single Prompt Agent returned no message")
+            await conversations.update(
+                conversation_id,
+                status="ready",
+                foundry_response_id=response_id,
+                pending_request=None,
+                active_message=None,
+                processing_lease_until=None,
+            )
+            await events.append(
+                conversation_id,
+                "agent_response",
+                {"step": "single_prompt_agent", "content": output},
+                message_id=message_id,
+            )
+            return
+
         request_info = _extract_request_info(
             response_data,
             allow_submit_confirmation=interaction_mode == "submission",
         )
-        approval_request = _extract_mcp_approval(response_data)
-        pending_event = request_info or approval_request
-        if pending_event:
-            next_pending, hitl_event = pending_event
+        if request_info:
+            next_pending, hitl_event = request_info
             await conversations.update(
                 conversation_id,
                 status="awaiting_input",
@@ -486,11 +417,6 @@ async def process_message(
             )
             return
 
-        output = str(
-            response_data.get("output_text")
-            or getattr(response, "output_text", "")
-            or ""
-        )
         await conversations.update(
             conversation_id,
             status="completed",
@@ -500,27 +426,9 @@ async def process_message(
             processing_lease_until=None,
         )
         completion_event: dict[str, Any] = {"output": output}
-        if pending and pending.get("type") in {
-            "submit_confirmation",
-            "mcp_approval",
-        }:
+        if pending and pending.get("type") == "submit_confirmation":
             data = _submission_event_data(pending)
-            request_id = (
-                _mcp_request_id(response_data)
-                or _request_id_from_output(output)
-            )
-            if pending.get("type") == "mcp_approval" and _approved(content):
-                if not request_id:
-                    raise RuntimeError(
-                        "Approved MCP submission returned no request ID"
-                    )
-                if not output:
-                    output = (
-                        f"{data['application_text']}\n\n"
-                        "✅ 出張申請書を送信しました。"
-                        f"（申請番号: {request_id}）"
-                    )
-                    completion_event["output"] = output
+            request_id = _request_id_from_output(output)
             completion_event.update(
                 {
                     "request_id": request_id,

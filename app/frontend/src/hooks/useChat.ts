@@ -93,7 +93,10 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
         if (!isCurrent()) return;
         const messageEvent = event as MessageEvent;
         rememberEvent(messageEvent);
-        const data = JSON.parse(messageEvent.data) as { content: string };
+        const data = JSON.parse(messageEvent.data) as {
+          step?: string;
+          content: string;
+        };
         addMessage({
           id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: "assistant",
@@ -101,6 +104,15 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
           timestamp: new Date(),
           eventType: "agent_response",
         });
+        hitlRequestRef.current = null;
+        pendingHitlMessageIdRef.current = null;
+        setHitlRequest(null);
+        setStatus({ step: data.step || "ready", label: "入力できます" });
+        setIsComplete(false);
+        retryRef.current = null;
+        setCanRetry(false);
+        setLoading(false);
+        closeSSE();
       });
 
       es.addEventListener("policy_result", (event) => {

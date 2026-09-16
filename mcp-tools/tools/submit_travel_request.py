@@ -54,6 +54,8 @@ def _validate_direct_arguments(arguments: dict) -> str | None:
             return f"{key} is required"
     if not isinstance(arguments.get("application_data"), dict):
         return "application_data must be an object"
+    if arguments.get("user_confirmed") is not True:
+        return "user_confirmed must be true"
     return None
 
 
@@ -170,7 +172,7 @@ async def submit_travel_request(arguments: dict) -> dict:
 
 
 async def submit_travel_request_with_approval(arguments: dict) -> dict:
-    """Persist a request after Foundry Agent Service approved the MCP call."""
+    """Persist a request after the Prompt Agent records user confirmation."""
     validation_error = _validate_direct_arguments(arguments)
     if validation_error:
         return _failure(validation_error)
@@ -221,7 +223,7 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
         "conversation_id": conversation_id,
         "idempotency_key": idempotency_key,
         "plan_hash": plan_hash,
-        "approval_mode": "foundry_mcp",
+        "approval_mode": "prompt_agent_mcp",
         "status": "submitted",
         "submitted_at": submitted_at,
         "application_text": arguments["application_text"],

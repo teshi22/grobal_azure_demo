@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from azure.ai.projects.models import (
-    FunctionTool,
     MCPTool,
     PromptAgentDefinition,
     PromptAgentDefinitionTextOptions,
@@ -100,52 +99,6 @@ TRAVEL_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": TRAVEL_PLAN_PROPERTIES,
     "required": list(TRAVEL_PLAN_PROPERTIES),
-    "additionalProperties": False,
-}
-
-CLARIFICATION_DATA_PROPERTIES: dict[str, Any] = {
-    "missing_fields": {
-        "type": "array",
-        "items": {
-            "type": "string",
-            "enum": ["departure", "destination", "schedule", "purpose"],
-        },
-        "minItems": 1,
-    },
-    "departure": {"type": ["string", "null"]},
-    "destination": {"type": ["string", "null"]},
-    "schedule": {"type": ["string", "null"]},
-    "purpose": {"type": ["string", "null"]},
-}
-
-CLARIFICATION_DATA_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": CLARIFICATION_DATA_PROPERTIES,
-    "required": list(CLARIFICATION_DATA_PROPERTIES),
-    "additionalProperties": False,
-}
-
-REQUEST_INFO_PARAMETERS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "type": {
-            "type": "string",
-            "enum": [
-                "clarification",
-                "request_confirmation",
-                "plan_review",
-            ],
-        },
-        "message": {"type": "string"},
-        "data": {
-            "anyOf": [
-                CLARIFICATION_DATA_SCHEMA,
-                EXTRACTED_REQUEST_SCHEMA,
-                TRAVEL_PLAN_SCHEMA,
-            ]
-        },
-    },
-    "required": ["type", "message", "data"],
     "additionalProperties": False,
 }
 
@@ -258,7 +211,6 @@ class PromptAgentSpec:
     response_schema: dict[str, Any] | None = None
     response_schema_name: str = ""
     web_search: bool = False
-    request_info: bool = False
     mcp_submission: bool = False
     require_tool: bool = False
 
@@ -276,8 +228,6 @@ class PromptAgentSpec:
         tools = []
         if self.web_search:
             tools.append(build_web_search_tool())
-        if self.request_info:
-            tools.append(build_request_info_tool())
         if self.mcp_submission:
             if not mcp_connection_id or not mcp_server_url:
                 raise ValueError(
@@ -323,18 +273,6 @@ def build_web_search_tool() -> WebSearchTool:
     )
 
 
-def build_request_info_tool() -> FunctionTool:
-    return FunctionTool(
-        name="request_info",
-        description=(
-            "Pause an interactive conversation for clarification, request "
-            "confirmation, travel plan review, or final submission approval."
-        ),
-        parameters=REQUEST_INFO_PARAMETERS_SCHEMA,
-        strict=True,
-    )
-
-
 def build_submission_mcp_tool(
     *,
     connection_id: str,
@@ -345,7 +283,7 @@ def build_submission_mcp_tool(
         server_url=server_url,
         project_connection_id=connection_id,
         allowed_tools=["submit_travel_request_with_approval"],
-        require_approval="always",
+        require_approval="never",
     )
 
 
@@ -384,7 +322,6 @@ PROMPT_AGENT_SPECS = (
         ),
         prompt_file="travel-request-single-agent.txt",
         web_search=True,
-        request_info=True,
         mcp_submission=True,
     ),
     PromptAgentSpec(

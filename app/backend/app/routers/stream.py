@@ -12,7 +12,9 @@ from app.services.cosmos import get_conversation_store, get_event_store
 
 router = APIRouter(tags=["stream"])
 
-_TERMINAL_EVENT_TYPES = frozenset({"hitl_request", "complete", "error"})
+_TERMINAL_EVENT_TYPES = frozenset(
+    {"agent_response", "hitl_request", "complete", "error"}
+)
 _INITIAL_POLL_SECONDS = 1
 _MAX_POLL_SECONDS = 5
 _KEEP_ALIVE_SECONDS = 15

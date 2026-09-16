@@ -31,7 +31,7 @@ const SCENARIOS: ScenarioDefinition[] = [
     title: "Single Prompt Agent",
     shortTitle: "Single Prompt Agent",
     description:
-      "単一エージェントが会話とHITLを管理し、FoundryのMCP承認後に直接申請します。",
+      "確認を含む会話全体を単一エージェントが進め、承認後にMCPで直接申請します。",
   },
 ];
 

@@ -75,7 +75,7 @@ def test_prompt_agent_definitions_use_supported_strict_schemas():
         _assert_no_max_properties(serialized)
 
 
-def test_single_agent_has_web_search_and_strict_request_info_tools():
+def test_single_agent_has_only_web_search_and_direct_mcp_tools():
     definitions = _load_definitions()
     agent_spec = next(
         spec
@@ -89,29 +89,9 @@ def test_single_agent_has_web_search_and_strict_request_info_tools():
         mcp_server_url="https://example.test/mcp",
     ).as_dict()
     tools = serialized["tools"]
-    assert {tool["type"] for tool in tools} == {
-        "web_search",
-        "function",
-        "mcp",
-    }
+    assert {tool["type"] for tool in tools} == {"web_search", "mcp"}
     assert "tool_choice" not in serialized
     assert "text" not in serialized
-
-    request_info = next(
-        tool
-        for tool in tools
-        if tool["type"] == "function" and tool["name"] == "request_info"
-    )
-    assert request_info["strict"] is True
-    parameters = request_info["parameters"]
-    assert parameters["properties"]["type"]["enum"] == [
-        "clarification",
-        "request_confirmation",
-        "plan_review",
-    ]
-    assert set(parameters["properties"]) == {"type", "message", "data"}
-    assert "request_event" not in parameters["properties"]
-    _assert_strict_object_schemas(parameters)
 
     mcp = next(tool for tool in tools if tool["type"] == "mcp")
     assert mcp == {
@@ -119,7 +99,7 @@ def test_single_agent_has_web_search_and_strict_request_info_tools():
         "server_url": "https://example.test/mcp",
         "project_connection_id": "travel-mcp-connection",
         "allowed_tools": ["submit_travel_request_with_approval"],
-        "require_approval": "always",
+        "require_approval": "never",
         "type": "mcp",
     }
 

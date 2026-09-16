@@ -44,6 +44,19 @@ def test_direct_submission_requires_conversation_capability():
     assert error == "submission_token is required"
 
 
+def test_direct_submission_requires_explicit_user_confirmation():
+    error = _validate_direct_arguments(
+        {
+            "application_text": "申請書",
+            "conversation_id": "conversation-1",
+            "submission_token": "token-1",
+            "application_data": {},
+            "policy_result": "規程適合",
+        }
+    )
+    assert error == "user_confirmed must be true"
+
+
 def test_direct_submission_uses_conversation_owner(monkeypatch):
     plan = {"departure": "大阪", "destination": "東京"}
     created = []
@@ -78,6 +91,7 @@ def test_direct_submission_uses_conversation_owner(monkeypatch):
                 "application_text": "申請書",
                 "conversation_id": "conversation-1",
                 "submission_token": "token-1",
+                "user_confirmed": True,
                 "application_data": plan,
                 "policy_result": "規程適合",
             }
@@ -86,5 +100,5 @@ def test_direct_submission_uses_conversation_owner(monkeypatch):
 
     assert result["success"] is True
     assert created[0]["user_id"] == "user-1"
-    assert created[0]["approval_mode"] == "foundry_mcp"
+    assert created[0]["approval_mode"] == "prompt_agent_mcp"
     assert created[0]["departure"] == "大阪"

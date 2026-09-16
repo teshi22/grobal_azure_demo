@@ -62,7 +62,7 @@ MCP_TOOLS = [
     {
         "name": "submit_travel_request_with_approval",
         "description": (
-            "Foundry MCP approval後に、単一Prompt Agentの出張申請を登録する"
+            "単一Prompt Agentが利用者の明示承認を確認した後に出張申請を登録する"
         ),
         "inputSchema": {
             "type": "object",
@@ -79,6 +79,11 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": "会話に結び付いた不透明な送信トークン",
                 },
+                "user_confirmed": {
+                    "type": "boolean",
+                    "const": True,
+                    "description": "Prompt Agentが明示的な利用者承認を確認したこと",
+                },
                 "application_data": {
                     "type": "object",
                     "description": "承認対象の構造化された出張申請データ",
@@ -92,6 +97,7 @@ MCP_TOOLS = [
                 "application_text",
                 "conversation_id",
                 "submission_token",
+                "user_confirmed",
                 "application_data",
                 "policy_result",
             ],

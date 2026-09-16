@@ -98,7 +98,14 @@ async def send_message(
     await events.append(
         conversation_id,
         "status",
-        {"step": "hosted_agent", "label": "処理中..."},
+        {
+            "step": (
+                "single_prompt_agent"
+                if conversation.get("scenario") == "single_prompt_agent"
+                else "hosted_agent"
+            ),
+            "label": "処理中...",
+        },
         message_id=message_id,
     )
     background_tasks.add_task(
