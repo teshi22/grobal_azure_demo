@@ -23,8 +23,8 @@ env:
   MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
   EVALUATION_JUDGE_MODEL: ${{ vars.EVALUATION_JUDGE_MODEL || vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
   MODEL_CAPACITY: ${{ vars.AZURE_AI_MODEL_CAPACITY || '20' }}
-  MCP_ENTRA_CLIENT_ID: ${{ secrets.MCP_ENTRA_CLIENT_ID }}
-  WEB_ENTRA_CLIENT_ID: ${{ secrets.WEB_ENTRA_CLIENT_ID }}
+  MCP_ENTRA_CLIENT_ID: ${{ vars.MCP_ENTRA_CLIENT_ID || secrets.MCP_ENTRA_CLIENT_ID }}
+  WEB_ENTRA_CLIENT_ID: ${{ vars.WEB_ENTRA_CLIENT_ID || secrets.WEB_ENTRA_CLIENT_ID }}
 
 jobs:
   deploy:
@@ -38,8 +38,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          : "${MCP_ENTRA_CLIENT_ID:?Set the MCP_ENTRA_CLIENT_ID repository secret.}"
-          : "${WEB_ENTRA_CLIENT_ID:?Set the WEB_ENTRA_CLIENT_ID repository secret.}"
+          : "${MCP_ENTRA_CLIENT_ID:?Set the MCP_ENTRA_CLIENT_ID repository variable or secret.}"
+          : "${WEB_ENTRA_CLIENT_ID:?Set the WEB_ENTRA_CLIENT_ID repository variable or secret.}"
 
       - name: Azure login
         uses: azure/login@v2
