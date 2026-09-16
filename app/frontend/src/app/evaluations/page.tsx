@@ -347,14 +347,16 @@ export default function EvaluationsPage() {
           </Link>
           <h1>デュアルシナリオ評価</h1>
           <p>
-            同じテストケースで 2 つの実装を同期実行し、自動評価と人手評価を分けて比較します。
+            高度な一括評価として、同じテストケースで 2
+            つの実装を同期実行し、自動評価と人手評価を分けて比較します。
           </p>
         </div>
         <nav aria-label="主要ナビゲーション" className="eval-page-nav">
-          <Link href="/">チャット</Link>
+          <Link href="/">HITL 申請</Link>
+          <Link href="/playground/">プレイグラウンド</Link>
           <Link href="/requests/">申請一覧</Link>
           <Link href="/evaluations/" aria-current="page">
-            評価
+            高度な一括評価
           </Link>
         </nav>
       </header>

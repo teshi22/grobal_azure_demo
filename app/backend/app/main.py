@@ -13,7 +13,13 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import conversations, evaluations, stream, travel_requests
+from app.routers import (
+    conversations,
+    evaluations,
+    scenarios,
+    stream,
+    travel_requests,
+)
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -135,6 +141,7 @@ if settings.cors_origins:
 # API ルート
 app.include_router(conversations.router, prefix="/api")
 app.include_router(evaluations.router, prefix="/api")
+app.include_router(scenarios.router, prefix="/api")
 app.include_router(stream.router, prefix="/api")
 app.include_router(travel_requests.router, prefix="/api")
 

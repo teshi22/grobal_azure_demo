@@ -192,6 +192,25 @@ export interface CanonicalEvaluationOutput {
   };
 }
 
+/** 手動シナリオ実行 */
+export type ScenarioExecutionMode = "foundry" | "stub";
+
+export interface ScenarioRunRequest {
+  scenario: EvaluationScenario;
+  input: string;
+}
+
+export interface ScenarioRunResponse {
+  run_id: string;
+  scenario: EvaluationScenario;
+  agent_name: string;
+  agent_version: string;
+  execution_mode: ScenarioExecutionMode;
+  duration_ms: number;
+  token_usage: Record<string, unknown>;
+  output: CanonicalEvaluationOutput;
+}
+
 export interface DeterministicCheck {
   name: string;
   passed: boolean;

@@ -1,6 +1,6 @@
 # 出張申請エージェント比較アプリ
 
-自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進めるWebアプリケーションです。通常の対話画面に加え、Agent Frameworkワークフローと単一Prompt Agentを同じテストケースで比較する評価画面を備えています。
+自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進めるWebアプリケーションです。通常の対話画面に加え、Agent Frameworkワークフローと単一Prompt Agentへ同じ依頼を直接送り、それぞれの結果を試せる画面を備えています。バッチ評価は詳細検証用の別画面として残しています。
 
 通常のエージェント処理は、**Microsoft Agent Frameworkで定義した1つのワークフロー**としてMicrosoft Foundry Hosted Agent上で実行します。依頼整理、旅程作成、規程説明、申請案作成は、versionを固定した4つのFoundry Prompt Agentが担当します。Azure Container Apps上のFastAPIは、認証、会話所有権、HITL（Human-in-the-Loop）、SSE配信、Foundryバッチ評価を受け持つBFFです。
 
@@ -39,7 +39,8 @@ flowchart LR
 
     User --> Web
     Web -->|"REST / SSE"| BFF
-    BFF -->|"Responses API"| Host
+    BFF -->|"通常対話 / 手動試行"| Host
+    BFF -->|"手動試行"| Single
     Host --> AF
     Clarifier & Planner & Policy & Writer -->|"Prompt Agent"| Model
     Planner -->|"Web Search"| Model
@@ -56,8 +57,8 @@ flowchart LR
 
 | コンポーネント | 実装 | 主な責務 |
 |---|---|---|
-| Frontend | Next.js 15、React 19 | チャット、確認画面、申請一覧、比較評価 |
-| BFF | FastAPI | Entra ID認証、会話所有権、Hosted Agent呼び出し、durable SSE、Datasetと評価runの管理 |
+| Frontend | Next.js 15、React 19 | チャット、2シナリオの手動試行、申請一覧、比較評価 |
+| BFF | FastAPI | Entra ID認証、会話所有権、2シナリオの直接呼び出し、durable SSE、Datasetと評価runの管理 |
 | Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4つのPrompt AgentのオーケストレーションとHITL |
 | Prompt Agents | Foundry Agent Service | 専門処理4種と単一エージェント比較シナリオ |
 | MCP | Azure Functions | 承認済み申請の冪等な登録 |
@@ -76,9 +77,29 @@ Hosted Agent 内の名前はチェックポイントとの互換性に関わる�
 
 Prompt Agentは名前だけでなくversionも設定に保存します。プロンプトやツール定義を変更した場合は新しいversionを作り、Hosted Agentと評価runへ同じversionを渡します。
 
+## まず2つのシナリオをアプリから試す
+
+`/playground`では、1つの自然言語入力を次のどちらかへ直接送信できます。
+
+| シナリオ | 実行内容 |
+|---|---|
+| Agent Framework workflow | Hosted Agent内のワークフローが4つの専門Prompt Agentと決定論的な規程判定を組み合わせる |
+| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web検索、規程判断、申請案作成までを処理する |
+
+各シナリオは個別に実行でき、確認事項、依頼内容、旅程と運賃根拠、規程判定、申請案、引用元、所要時間、取得できる場合はトークン数を表示します。同じ入力を残したまま両方を順番に試せます。
+
+この画面は比較評価runを作成せず、Cosmos DBへ申請を保存せず、MCPによる申請送信も行いません。Agent Framework側には評価モードのエンベロープを渡し、HITLを自動通過して申請案の生成で停止します。実際に確認しながら申請を送信する場合は`/`の通常対話画面を使います。
+
+| 画面 | 用途 |
+|---|---|
+| `/` | Agent Frameworkによる通常対話、HITL、申請送信 |
+| `/playground` | 2シナリオの副作用なし手動試行 |
+| `/requests` | 送信済み申請の確認 |
+| `/evaluations` | Datasetを使った詳細なバッチ比較評価 |
+
 ## 同じ20ケースで2つの構成を比較する
 
-`/evaluations`では次の2シナリオを比較します。
+`/evaluations`では次の2シナリオを同じDatasetで詳細比較します。まず応答を確認するだけなら、評価runを作成しない`/playground`を使ってください。
 
 | シナリオ | 構成 |
 |---|---|
@@ -148,8 +169,8 @@ MCP は grant の状態、有効期限、会話 ID、旅程ハッシュを再検
 │   └── backend/
 │       ├── app/
 │       │   ├── auth/entra.py           # Easy Auth / Bearer JWT 検証
-│       │   ├── routers/                # conversations、stream、travel_requests、evaluations
-│       │   └── services/               # Hosted Agent、Foundry評価、採点、Cosmos
+│       │   ├── routers/                # conversations、scenarios、stream、travel_requests、evaluations
+│       │   └── services/               # Hosted Agent、手動試行、Foundry評価、採点、Cosmos
 │       ├── config/                     # rubric とモデル単価
 │       └── tests/
 ├── prompt-agents/                      # 5つのPrompt Agent定義
@@ -213,7 +234,9 @@ bash deploy.sh
 4. MCP Functions、Hosted Agent、BFFを固定versionでデプロイする
 5. BFF、Foundryプロジェクト、Hosted AgentのManaged Identityへ必要な権限を設定する
 6. 初期20ケースを登録する
-7. BFFのhealth check、Hosted Agentの`request_info`、2ケースの比較評価を確認する
+7. BFFのhealth checkとHosted Agentの`request_info`を確認する
+
+比較評価のスモークテストは通常デプロイでは実行しません。必要な場合だけ、ローカルでは`RUN_EVALUATION_SMOKE=true`、GitHub Actionsでは同名のRepository Variableを`true`に設定して有効化します。
 
 必要に応じて環境変数でデプロイ先を上書きできます。
 

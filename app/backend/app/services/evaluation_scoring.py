@@ -64,6 +64,13 @@ def _extract_json_object(value: Any) -> dict[str, Any]:
     return parsed
 
 
+def parse_canonical_output(value: Any) -> CanonicalEvaluationOutput:
+    """Parse and validate the common structured agent output."""
+    return CanonicalEvaluationOutput.model_validate(
+        _extract_json_object(value)
+    )
+
+
 def _normalize_text(value: str) -> str:
     return re.sub(r"[\s、,。・（）()年月日/-]+", "", value).casefold()
 
@@ -114,9 +121,7 @@ def score_evaluation_output(
 ) -> DeterministicScore:
     checks: list[DeterministicCheck] = []
     try:
-        output = CanonicalEvaluationOutput.model_validate(
-            _extract_json_object(raw_output)
-        )
+        output = parse_canonical_output(raw_output)
     except (ValueError, json.JSONDecodeError, ValidationError) as exc:
         checks.append(_check("schema", False, 20, str(exc)))
         return DeterministicScore(score=0, checks=checks, output=None)

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 _project_client: AIProjectClient | None = None
 _credential: DefaultAzureCredential | None = None
-_hosted_responses = None
+_agent_responses: dict[str, Any] = {}
 
 
 def get_project_client() -> AIProjectClient:
@@ -35,15 +35,19 @@ def get_project_client() -> AIProjectClient:
     return _project_client
 
 
+def get_agent_responses_client(agent_name: str):
+    """Return a Responses client bound to an active Foundry Agent."""
+    if agent_name not in _agent_responses:
+        _agent_responses[agent_name] = get_project_client().get_openai_client(
+            agent_name=agent_name,
+        ).responses
+        logger.info("Foundry Agent Responses client initialized: %s", agent_name)
+    return _agent_responses[agent_name]
+
+
 def get_hosted_responses_client():
     """Return a Responses client bound to the deployed Hosted Agent."""
-    global _hosted_responses
-    if _hosted_responses is None:
-        _hosted_responses = get_project_client().get_openai_client(
-            agent_name=settings.hosted_agent_name,
-        ).responses
-        logger.info("Hosted Agent Responses client initialized")
-    return _hosted_responses
+    return get_agent_responses_client(settings.hosted_agent_name)
 
 
 def invoke_hosted_agent(
@@ -90,6 +94,23 @@ def invoke_hosted_agent(
     return get_hosted_responses_client().create(**kwargs)
 
 
+def invoke_scenario_agent(
+    *,
+    agent_name: str,
+    session_id: str | None,
+    envelope: dict[str, Any],
+):
+    """Run one active Foundry Agent without storing state or side effects."""
+    kwargs: dict[str, Any] = {
+        "input": json.dumps(envelope, ensure_ascii=False),
+        "store": False,
+        "stream": False,
+    }
+    if session_id:
+        kwargs["extra_body"] = {"agent_session_id": session_id}
+    return get_agent_responses_client(agent_name).create(**kwargs)
+
+
 def response_to_dict(response: Any) -> dict[str, Any]:
     """Convert the OpenAI response model to JSON-compatible data."""
     if hasattr(response, "model_dump"):
@@ -100,8 +121,8 @@ def response_to_dict(response: Any) -> dict[str, Any]:
 
 
 def close_foundry_client() -> None:
-    global _project_client, _credential, _hosted_responses
-    _hosted_responses = None
+    global _project_client, _credential
+    _agent_responses.clear()
     if _project_client is not None:
         _project_client.close()
         _project_client = None

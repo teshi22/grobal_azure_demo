@@ -10,6 +10,8 @@ import type {
   EvaluationRun,
   EvaluationScenario,
   HumanReview,
+  ScenarioRunRequest,
+  ScenarioRunResponse,
   TravelRequest,
 } from "./types";
 import { EVALUATION_DATASET_ID } from "./types";
@@ -247,6 +249,16 @@ export async function fetchTravelRequest(
   requestId: string,
 ): Promise<TravelRequest> {
   return apiRequest<TravelRequest>(`/travel-requests/${requestId}`);
+}
+
+export async function runScenario(
+  value: ScenarioRunRequest,
+): Promise<ScenarioRunResponse> {
+  return apiRequest<ScenarioRunResponse>("/scenarios/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(value),
+  });
 }
 
 export async function fetchEvaluationCases(): Promise<EvaluationCase[]> {
