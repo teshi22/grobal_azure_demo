@@ -851,7 +851,7 @@ def _testing_criteria(
             evaluator_name=evaluator["name"],
             evaluator_version=evaluator["version"],
             initialization_parameters={
-                "deployment_name": settings.evaluation_judge_model
+                "model": settings.evaluation_judge_model
             },
             data_mapping={
                 "query": "{{item.query}}",

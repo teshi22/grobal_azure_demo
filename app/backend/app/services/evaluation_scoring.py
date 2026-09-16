@@ -35,6 +35,7 @@ ALLOWED_FARE_DOMAINS = (
     "jorudan.co.jp",
     "navitime.co.jp",
 )
+NON_MODEL_USAGE_ALIASES = frozenset({"azure_ai_agent_target"})
 
 
 @dataclass(frozen=True)
@@ -291,9 +292,13 @@ def estimate_token_cost(
     currency = pricing["currency"]
     total = 0.0
     unavailable_models: list[str] = []
+    ignored_model_aliases: list[str] = []
     breakdown: dict[str, Any] = {}
 
     for model, usage in per_model_usage.items():
+        if model.strip().casefold() in NON_MODEL_USAGE_ALIASES:
+            ignored_model_aliases.append(model)
+            continue
         model_price = pricing["models"].get(model)
         input_tokens = int(
             usage.get("input_tokens", usage.get("prompt_tokens", 0))
@@ -339,11 +344,23 @@ def estimate_token_cost(
             "cost": round(cost, 8),
         }
 
+    if not breakdown:
+        return {
+            "available": False,
+            "currency": currency,
+            "total": None,
+            "pricing_updated_at": pricing["updated_at"],
+            "unavailable_models": sorted(unavailable_models),
+            "ignored_model_aliases": sorted(ignored_model_aliases),
+            "breakdown": {},
+            "reason": "billable_model_usage_unavailable",
+        }
     return {
         "available": not unavailable_models,
         "currency": currency,
         "total": round(total, 8) if not unavailable_models else None,
         "pricing_updated_at": pricing["updated_at"],
         "unavailable_models": sorted(unavailable_models),
+        "ignored_model_aliases": sorted(ignored_model_aliases),
         "breakdown": breakdown,
     }

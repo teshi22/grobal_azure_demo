@@ -236,6 +236,98 @@ def test_estimates_cached_and_uncached_token_costs():
     assert result["total"] == 3.55
 
 
+def test_cost_ignores_agent_target_alias_when_priced_model_is_present():
+    pricing = {
+        "currency": "USD",
+        "unit": "per_1m_tokens",
+        "updated_at": "2026-09-15",
+        "models": {
+            "gpt-5.4": {
+                "input": 2.5,
+                "cached_input": 0.25,
+                "output": 15,
+            }
+        },
+    }
+
+    result = estimate_token_cost(
+        {
+            "azure_ai_agent_target": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000,
+            },
+            "gpt-5.4": {
+                "prompt_tokens": 1_000_000,
+                "cached_tokens": 200_000,
+                "completion_tokens": 100_000,
+            },
+        },
+        pricing,
+    )
+
+    assert result["available"] is True
+    assert result["total"] == 3.55
+    assert result["ignored_model_aliases"] == ["azure_ai_agent_target"]
+    assert set(result["breakdown"]) == {"gpt-5.4"}
+
+
+def test_cost_still_reports_unknown_models_with_agent_target_alias():
+    pricing = {
+        "currency": "USD",
+        "unit": "per_1m_tokens",
+        "updated_at": "2026-09-15",
+        "models": {
+            "gpt-5.4": {
+                "input": 2.5,
+                "cached_input": 0.25,
+                "output": 15,
+            }
+        },
+    }
+
+    result = estimate_token_cost(
+        {
+            "azure_ai_agent_target": {"prompt_tokens": 100},
+            "unrecognized-model": {"prompt_tokens": 100},
+        },
+        pricing,
+    )
+
+    assert result["available"] is False
+    assert result["total"] is None
+    assert result["unavailable_models"] == ["unrecognized-model"]
+    assert result["ignored_model_aliases"] == ["azure_ai_agent_target"]
+
+
+def test_agent_target_alias_alone_is_not_reported_as_zero_cost():
+    pricing = {
+        "currency": "USD",
+        "unit": "per_1m_tokens",
+        "updated_at": "2026-09-15",
+        "models": {
+            "gpt-5.4": {
+                "input": 2.5,
+                "cached_input": 0.25,
+                "output": 15,
+            }
+        },
+    }
+
+    result = estimate_token_cost(
+        {
+            "azure_ai_agent_target": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+            }
+        },
+        pricing,
+    )
+
+    assert result["available"] is False
+    assert result["total"] is None
+    assert result["reason"] == "billable_model_usage_unavailable"
+
+
 def test_clarification_rejects_hallucinated_empty_field_and_payload():
     case = _case(
         expected_status="needs_clarification",

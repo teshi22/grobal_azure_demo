@@ -666,6 +666,7 @@ def _cost_or_unavailable(
             "total": None,
             "pricing_updated_at": pricing.get("updated_at"),
             "unavailable_models": [],
+            "ignored_model_aliases": [],
             "breakdown": {},
             "reason": "token_usage_unavailable",
         }

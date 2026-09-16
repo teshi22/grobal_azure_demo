@@ -97,6 +97,13 @@ class _Runs:
             "per_testing_criteria_results": [],
             "per_model_usage": [
                 {
+                    "model_name": "azure_ai_agent_target",
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                    "invocation_count": 1,
+                },
+                {
                     "model_name": "gpt-test",
                     "prompt_tokens": 10,
                     "completion_tokens": 2,
@@ -180,6 +187,10 @@ def test_sdk_adapter_normalizes_documented_evaluation_shapes():
     assert dataset_id == "dataset:dataset:v1"
     assert evaluator == {"name": "rubric", "version": "7"}
     assert snapshot.rows[0]["case_id"] == "case-001"
+    assert (
+        snapshot.per_model_usage["azure_ai_agent_target"]["total_tokens"]
+        == 12
+    )
     assert snapshot.per_model_usage["gpt-test"]["total_tokens"] == 12
     target = openai_client.evals.runs.created[0][1]["data_source"]["target"]
     assert target == {
@@ -205,7 +216,7 @@ def test_sdk_adapter_normalizes_documented_evaluation_shapes():
             "evaluator_name": "rubric",
             "evaluator_version": "7",
             "initialization_parameters": {
-                "deployment_name": settings.evaluation_judge_model
+                "model": settings.evaluation_judge_model
             },
             "data_mapping": {
                 "query": "{{item.query}}",
