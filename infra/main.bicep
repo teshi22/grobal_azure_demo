@@ -51,6 +51,12 @@ param singlePromptAgentName string = 'travel-request-single-agent'
 @description('単一 Prompt Agent バージョン（同期後に固定値を設定）')
 param singlePromptAgentVersion string = ''
 
+@description('単一 Prompt Agent 評価用エージェント名')
+param singlePromptEvaluationAgentName string = 'travel-request-single-evaluator'
+
+@description('単一 Prompt Agent 評価用バージョン')
+param singlePromptEvaluationAgentVersion string = ''
+
 @description('評価 Judge モデル名')
 param evaluationJudgeModel string = modelName
 
@@ -212,8 +218,8 @@ module containerApps 'modules/container-apps.bicep' = {
     hostedAgentVersion: hostedAgentVersion
     singlePromptAgentName: singlePromptAgentName
     singlePromptAgentVersion: singlePromptAgentVersion
-    mcpToolEndpoint: functions.outputs.mcpEndpoint
-    mcpFunctionAppClientId: mcpEntraClientId
+    singlePromptEvaluationAgentName: singlePromptEvaluationAgentName
+    singlePromptEvaluationAgentVersion: singlePromptEvaluationAgentVersion
     evaluationJudgeModel: evaluationJudgeModel
     webEntraClientId: webEntraClientId
     entraTenantId: subscription().tenantId

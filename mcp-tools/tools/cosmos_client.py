@@ -22,6 +22,10 @@ COSMOS_APPROVAL_GRANT_CONTAINER = os.environ.get(
     "COSMOS_APPROVAL_GRANT_CONTAINER",
     "approval-grants",
 )
+COSMOS_CONVERSATION_CONTAINER = os.environ.get(
+    "COSMOS_CONVERSATION_CONTAINER",
+    "conversations",
+)
 
 
 def _get_client() -> CosmosClient:
@@ -46,3 +50,10 @@ def get_approval_grant_container() -> ContainerProxy:
     client = _get_client()
     db = client.get_database_client(COSMOS_DATABASE)
     return db.get_container_client(COSMOS_APPROVAL_GRANT_CONTAINER)
+
+
+def get_conversation_container() -> ContainerProxy:
+    """Return the BFF conversation ownership container."""
+    client = _get_client()
+    db = client.get_database_client(COSMOS_DATABASE)
+    return db.get_container_client(COSMOS_CONVERSATION_CONTAINER)

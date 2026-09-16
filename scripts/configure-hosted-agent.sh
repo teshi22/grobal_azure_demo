@@ -68,8 +68,18 @@ bff_principal_id=$(az containerapp show \
   --name "$CONTAINER_APP_NAME" \
   --query identity.principalId \
   --output tsv)
-bff_client_id=$(az ad sp show \
-  --id "$bff_principal_id" \
+
+project_principal_id=$(az rest \
+  --method GET \
+  --url "https://management.azure.com${FOUNDRY_PROJECT_RESOURCE_ID}?api-version=2025-04-01-preview" \
+  --query identity.principalId \
+  --output tsv)
+if [[ -z "$project_principal_id" ]]; then
+  echo "Foundry project managed identity was not available." >&2
+  exit 1
+fi
+project_client_id=$(az ad sp show \
+  --id "$project_principal_id" \
   --query appId \
   --output tsv)
 
@@ -152,8 +162,8 @@ auth_config=$(az rest \
   --url "https://management.azure.com${function_auth_id}?api-version=2024-04-01")
 auth_config=$(jq \
   --arg agent_client_id "$agent_client_id" \
-  --arg bff_client_id "$bff_client_id" \
-  '.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications = ([$agent_client_id, $bff_client_id] | unique)
+  --arg project_client_id "$project_client_id" \
+  '.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications = ([$agent_client_id, $project_client_id] | unique)
    | {properties: .properties}' \
   <<<"$auth_config")
 az rest \
@@ -162,4 +172,4 @@ az rest \
   --body "$auth_config" \
   --output none
 
-echo "Configured Hosted Agent identity ${agent_principal_id} and BFF identity ${bff_principal_id}, including MCP access."
+echo "Configured Hosted Agent identity ${agent_principal_id}, Foundry project identity ${project_principal_id}, and BFF impersonation access."

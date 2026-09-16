@@ -200,14 +200,46 @@ def test_single_prompt_submission_uses_submission_envelope(monkeypatch):
     foundry.invoke_single_prompt_agent(
         interaction_mode="submission",
         conversation_id="conversation-1",
+        submission_token="submission-token-1",
         message="大阪へ出張",
     )
 
     assert json.loads(responses.kwargs["input"]) == {
         "mode": "submission",
         "conversation_id": "conversation-1",
+        "submission_token": "submission-token-1",
         "input": "大阪へ出張",
     }
+    assert "extra_body" not in responses.kwargs
+    assert "extra_headers" not in responses.kwargs
+
+
+def test_single_prompt_submission_sends_native_mcp_approval(monkeypatch):
+    responses = _CaptureResponses()
+    monkeypatch.setattr(settings, "single_prompt_agent_name", "prompt-agent")
+    monkeypatch.setattr(
+        foundry,
+        "get_agent_responses_client",
+        lambda agent_name: responses,
+    )
+
+    foundry.invoke_single_prompt_agent(
+        interaction_mode="submission",
+        conversation_id="conversation-1",
+        submission_token="submission-token-1",
+        previous_response_id="response-1",
+        mcp_approval_request_id="mcp-approval-1",
+        mcp_approved=True,
+    )
+
+    assert responses.kwargs["previous_response_id"] == "response-1"
+    assert responses.kwargs["input"] == [
+        {
+            "type": "mcp_approval_response",
+            "approval_request_id": "mcp-approval-1",
+            "approve": True,
+        }
+    ]
     assert "extra_body" not in responses.kwargs
     assert "extra_headers" not in responses.kwargs
 
@@ -253,25 +285,37 @@ def test_extracts_submission_payload_for_ui_and_grant():
     assert event["data"]["policy_result"] == "規程適合"
 
 
-def test_extracts_direct_single_agent_submission_and_computes_plan_hash():
+def test_extracts_native_mcp_submission_approval():
     plan = {"departure": "大阪", "destination": "東京"}
-    result = _extract_request_info(
-        _direct_response(
-            {
-                "type": "submit_confirmation",
-                "message": "申請しますか。",
-                "data": {
-                    "application_text": "申請書",
-                    "plan": plan,
-                    "policy_result": "規程適合",
-                },
-            }
-        )
+    result = hosted_agent._extract_mcp_approval(
+        {
+            "output": [
+                {
+                    "type": "mcp_approval_request",
+                    "id": "mcp-approval-1",
+                    "server_label": "travel-request-submission",
+                    "name": "submit_travel_request_with_approval",
+                    "arguments": json.dumps(
+                        {
+                            "application_text": "申請書",
+                            "application_data": plan,
+                            "policy_result": "規程適合",
+                            "conversation_id": "conversation-1",
+                            "submission_token": "secret",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+        }
     )
 
     assert result is not None
     pending, event = result
     expected_hash = hosted_agent._plan_hash(plan)
+    assert pending["call_id"] == "mcp-approval-1"
+    assert pending["type"] == "mcp_approval"
+    assert event["type"] == "submit_confirmation"
     assert pending["payload"]["data"]["plan_hash"] == expected_hash
     assert event["data"] == {
         "application_text": "申請書",
@@ -341,7 +385,7 @@ def test_extracts_serialized_submission_payload():
                 "data": {"missing_fields": ["purpose"]},
             },
             "顧客訪問",
-            {"answer": "顧客訪問"},
+            {"response": "顧客訪問"},
         ),
         (
             {
@@ -350,7 +394,7 @@ def test_extracts_serialized_submission_payload():
                 "data": {"destination": "大阪"},
             },
             "はい",
-            {"confirmed": True, "revision": ""},
+            {"response": "はい"},
         ),
         (
             {
@@ -359,7 +403,7 @@ def test_extracts_serialized_submission_payload():
                 "data": {"destination": "大阪"},
             },
             "日程を変更",
-            {"approved": False, "feedback": "日程を変更"},
+            {"response": "日程を変更"},
         ),
     ],
 )
@@ -386,6 +430,7 @@ def test_normalizes_direct_prompt_agent_requests_and_function_outputs(
             pending=pending,
             user_id="user-1",
             conversation_id="conversation-1",
+            scenario="single_prompt_agent",
         )
     )
     assert output == expected_output
@@ -451,6 +496,7 @@ def test_submission_approval_issues_grant_from_normalized_payload(monkeypatch):
             pending=pending,
             user_id="user-1",
             conversation_id="conversation-1",
+            scenario="agent_framework_workflow",
         )
     )
     assert output == {
@@ -551,15 +597,18 @@ def test_process_message_upgrades_stored_single_prompt_playground_conversation(
         {
             "interaction_mode": "submission",
             "conversation_id": "conversation-1",
+            "submission_token": "conversation-1",
             "message": "大阪へ出張",
             "previous_response_id": None,
             "function_call_id": None,
             "function_output": None,
+            "mcp_approval_request_id": None,
+            "mcp_approved": None,
         }
     ]
 
 
-def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
+def test_single_prompt_submission_approves_native_mcp_request(monkeypatch):
     plan = {
         "departure": "東京",
         "destination": "大阪",
@@ -568,8 +617,8 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
     }
     plan_hash = hosted_agent._plan_hash(plan)
     pending = {
-        "call_id": "submit-call-1",
-        "type": "submit_confirmation",
+        "call_id": "mcp-approval-1",
+        "type": "mcp_approval",
         "payload": {
             "data": {
                 "application_text": "出張申請書案",
@@ -581,7 +630,7 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
     }
     updates = []
     emitted = []
-    submissions = []
+    invocations = []
 
     class Store:
         async def get_owned(self, conversation_id, user_id):
@@ -590,6 +639,7 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
                 "user_id": user_id,
                 "scenario": "single_prompt_agent",
                 "interaction_mode": "submission",
+                "submission_token": "submission-token-1",
                 "foundry_response_id": "response-1",
                 "pending_request": pending,
             }
@@ -601,28 +651,39 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
         async def append(self, conversation_id, event_type, data, **kwargs):
             emitted.append((event_type, data))
 
-    class GrantStore:
-        async def issue(self, **kwargs):
-            assert kwargs == {
-                "user_id": "user-1",
-                "conversation_id": "conversation-1",
-                "call_id": "submit-call-1",
-                "plan_hash": plan_hash,
-            }
-            return {"id": "grant-1", "idempotency_key": "mcp-key-1"}
+    class Response:
+        output_text = "出張申請を送信しました。申請番号: TR-ABC123"
 
-    async def fake_submit(arguments):
-        submissions.append(arguments)
-        return {"success": True, "request_id": "TR-ABC123"}
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-2",
+                "status": "completed",
+                "output_text": self.output_text,
+                "output": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "travel-request-submission",
+                        "name": "submit_travel_request_with_approval",
+                        "output": json.dumps(
+                            {
+                                "success": True,
+                                "request_id": "TR-ABC123",
+                            }
+                        ),
+                    }
+                ],
+            }
+
+    def fake_invoke(**kwargs):
+        invocations.append(kwargs)
+        return Response()
 
     monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
     monkeypatch.setattr(hosted_agent, "get_event_store", Events)
-    monkeypatch.setattr(hosted_agent, "get_approval_grant_store", GrantStore)
-    monkeypatch.setattr(hosted_agent, "submit_travel_request", fake_submit)
     monkeypatch.setattr(
         hosted_agent,
         "_invoke_for_conversation",
-        lambda **kwargs: pytest.fail("Foundry should not be resumed after submission"),
+        fake_invoke,
     )
 
     asyncio.run(
@@ -635,14 +696,16 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
         )
     )
 
-    assert submissions == [
+    assert invocations == [
         {
+            "scenario": "single_prompt_agent",
+            "interaction_mode": "submission",
             "conversation_id": "conversation-1",
-            "approval_grant_id": "grant-1",
-            "idempotency_key": "mcp-key-1",
-            "plan_hash": plan_hash,
-            "application_text": "出張申請書案",
-            "application_data": plan,
+            "user_id": "user-1",
+            "submission_token": "submission-token-1",
+            "previous_response_id": "response-1",
+            "mcp_approval_request_id": "mcp-approval-1",
+            "mcp_approved": True,
         }
     ]
     assert updates[-1]["status"] == "completed"
@@ -651,8 +714,7 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
             "complete",
             {
                 "output": (
-                    "出張申請書案\n\n"
-                    "✅ 出張申請書を送信しました。（申請番号: TR-ABC123）"
+                    "出張申請を送信しました。申請番号: TR-ABC123"
                 ),
                 "request_id": "TR-ABC123",
                 "plan": plan,
@@ -662,10 +724,10 @@ def test_single_prompt_submission_issues_grant_and_calls_mcp(monkeypatch):
     ]
 
 
-def test_single_prompt_submission_can_be_cancelled_without_mcp(monkeypatch):
+def test_single_prompt_submission_denies_native_mcp_request(monkeypatch):
     pending = {
-        "call_id": "submit-call-1",
-        "type": "submit_confirmation",
+        "call_id": "mcp-approval-1",
+        "type": "mcp_approval",
         "payload": {
             "data": {
                 "application_text": "出張申請書案",
@@ -676,12 +738,15 @@ def test_single_prompt_submission_can_be_cancelled_without_mcp(monkeypatch):
         },
     }
     emitted = []
+    invocations = []
 
     class Store:
         async def get_owned(self, conversation_id, user_id):
             return {
                 "scenario": "single_prompt_agent",
                 "interaction_mode": "submission",
+                "submission_token": "submission-token-1",
+                "foundry_response_id": "response-1",
                 "pending_request": pending,
             }
 
@@ -693,12 +758,24 @@ def test_single_prompt_submission_can_be_cancelled_without_mcp(monkeypatch):
         async def append(self, conversation_id, event_type, data, **kwargs):
             emitted.append((event_type, data))
 
-    async def fail_submit(arguments):
-        pytest.fail("MCP should not be called after cancellation")
+    class Response:
+        output_text = "出張申請の送信をキャンセルしました。"
+
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-2",
+                "status": "completed",
+                "output_text": self.output_text,
+                "output": [],
+            }
+
+    def fake_invoke(**kwargs):
+        invocations.append(kwargs)
+        return Response()
 
     monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
     monkeypatch.setattr(hosted_agent, "get_event_store", Events)
-    monkeypatch.setattr(hosted_agent, "submit_travel_request", fail_submit)
+    monkeypatch.setattr(hosted_agent, "_invoke_for_conversation", fake_invoke)
 
     asyncio.run(
         hosted_agent.process_message(
@@ -710,8 +787,28 @@ def test_single_prompt_submission_can_be_cancelled_without_mcp(monkeypatch):
         )
     )
 
+    assert invocations == [
+        {
+            "scenario": "single_prompt_agent",
+            "interaction_mode": "submission",
+            "conversation_id": "conversation-1",
+            "user_id": "user-1",
+            "submission_token": "submission-token-1",
+            "previous_response_id": "response-1",
+            "mcp_approval_request_id": "mcp-approval-1",
+            "mcp_approved": False,
+        }
+    ]
     assert emitted == [
-        ("complete", {"output": "出張申請の送信をキャンセルしました。"})
+        (
+            "complete",
+            {
+                "output": "出張申請の送信をキャンセルしました。",
+                "request_id": "",
+                "plan": {"departure": "東京"},
+                "policy_display": "規程適合",
+            },
+        )
     ]
 
 

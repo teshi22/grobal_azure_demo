@@ -57,17 +57,39 @@ def invoke_conversation_agent(
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
+    mcp_approval_request_id: str | None = None,
+    mcp_approved: bool | None = None,
     agent_session_id: str | None = None,
     user_identity: str | None = None,
 ):
     """Start or resume a durable Foundry Agent response."""
-    if (message_envelope is None) == (function_output is None):
-        raise ValueError("Provide either message_envelope or function_output")
+    provided_inputs = sum(
+        value is not None
+        for value in (
+            message_envelope,
+            function_output,
+            mcp_approval_request_id,
+        )
+    )
+    if provided_inputs != 1:
+        raise ValueError(
+            "Provide exactly one message, function output, or MCP approval"
+        )
 
-    if function_output is not None:
+    if mcp_approval_request_id is not None:
+        if mcp_approved is None:
+            raise ValueError("mcp_approved is required for MCP approval")
+        response_input: str | list[dict[str, Any]] = [
+            {
+                "type": "mcp_approval_response",
+                "approval_request_id": mcp_approval_request_id,
+                "approve": mcp_approved,
+            }
+        ]
+    elif function_output is not None:
         if not function_call_id:
             raise ValueError("function_call_id is required for function output")
-        response_input: str | list[dict[str, str]] = [
+        response_input = [
             {
                 "type": "function_call_output",
                 "call_id": function_call_id,
@@ -104,6 +126,8 @@ def invoke_hosted_agent(
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
+    mcp_approval_request_id: str | None = None,
+    mcp_approved: bool | None = None,
 ):
     """Start or resume a Hosted Agent response for one authenticated user."""
     return invoke_conversation_agent(
@@ -119,6 +143,8 @@ def invoke_hosted_agent(
         previous_response_id=previous_response_id,
         function_call_id=function_call_id,
         function_output=function_output,
+        mcp_approval_request_id=mcp_approval_request_id,
+        mcp_approved=mcp_approved,
         agent_session_id=conversation_id,
         user_identity=user_id,
     )
@@ -132,6 +158,8 @@ def invoke_playground_agent(
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
+    mcp_approval_request_id: str | None = None,
+    mcp_approved: bool | None = None,
 ):
     """Start or resume a side-effect-free playground conversation."""
     if scenario == "agent_framework_workflow":
@@ -157,6 +185,8 @@ def invoke_playground_agent(
         previous_response_id=previous_response_id,
         function_call_id=function_call_id,
         function_output=function_output,
+        mcp_approval_request_id=mcp_approval_request_id,
+        mcp_approved=mcp_approved,
         agent_session_id=agent_session_id,
     )
 
@@ -165,10 +195,13 @@ def invoke_single_prompt_agent(
     *,
     interaction_mode: str,
     conversation_id: str,
+    submission_token: str,
     message: str | None = None,
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
     function_output: dict[str, Any] | None = None,
+    mcp_approval_request_id: str | None = None,
+    mcp_approved: bool | None = None,
 ):
     """Start or resume an interactive Single Prompt Agent conversation."""
     if interaction_mode not in {"submission", "playground"}:
@@ -181,6 +214,7 @@ def invoke_single_prompt_agent(
             {
                 "mode": interaction_mode,
                 "conversation_id": conversation_id,
+                "submission_token": submission_token,
                 "input": message,
             }
             if message is not None
@@ -189,6 +223,8 @@ def invoke_single_prompt_agent(
         previous_response_id=previous_response_id,
         function_call_id=function_call_id,
         function_output=function_output,
+        mcp_approval_request_id=mcp_approval_request_id,
+        mcp_approved=mcp_approved,
     )
 
 

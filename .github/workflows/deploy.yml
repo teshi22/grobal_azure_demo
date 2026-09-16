@@ -16,6 +16,8 @@ env:
   IMAGE_NAME: travel-agent-app
   HOSTED_AGENT_NAME: travel-request-agent
   SINGLE_PROMPT_AGENT_NAME: travel-request-single-agent
+  SINGLE_PROMPT_EVALUATION_AGENT_NAME: travel-request-single-evaluator
+  MCP_CONNECTION_NAME: travel-request-mcp
   CLARIFIER_AGENT_NAME: travel-request-clarifier
   PLANNER_AGENT_NAME: travel-request-planner
   POLICY_AGENT_NAME: travel-request-policy-narrator
@@ -57,6 +59,7 @@ jobs:
           set -euo pipefail
           azd extension install azure.ai.projects
           azd extension install azure.ai.agents
+          azd extension install azure.ai.connections
 
       - name: Deploy Azure infrastructure
         shell: bash
@@ -166,6 +169,33 @@ jobs:
             fi
           done
 
+      - name: Configure Prompt Agent MCP connection
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --tenant-id "$AZURE_TENANT_ID" \
+            --federated-credential-provider github
+          azd ai connection create "$MCP_CONNECTION_NAME" \
+            --project-endpoint "$PROJECT_ENDPOINT" \
+            --kind remote-tool \
+            --target "$MCP_TOOL_ENDPOINT" \
+            --auth-type project-managed-identity \
+            --audience "api://${MCP_ENTRA_CLIENT_ID}" \
+            --force \
+            --output json \
+            --no-prompt \
+            > "$RUNNER_TEMP/mcp-connection.json"
+          mcp_connection_id=$(jq -er \
+            '.id // .connectionId // .name' \
+            "$RUNNER_TEMP/mcp-connection.json")
+          echo "MCP_CONNECTION_ID=${mcp_connection_id}" >> "$GITHUB_ENV"
+
       - name: Synchronize versioned Prompt Agents
         shell: bash
         run: |
@@ -179,6 +209,8 @@ jobs:
             if python scripts/deploy-prompt-agents.py \
               --project-endpoint "$PROJECT_ENDPOINT" \
               --model "$MODEL_DEPLOYMENT_NAME" \
+              --mcp-connection-id "$MCP_CONNECTION_ID" \
+              --mcp-server-url "$MCP_TOOL_ENDPOINT" \
               --output "$versions_file" \
               >/dev/null; then
               break
@@ -196,7 +228,8 @@ jobs:
               PLANNER_AGENT_NAME \
               POLICY_AGENT_NAME \
               APPROVAL_AGENT_NAME \
-              SINGLE_PROMPT_AGENT_NAME; do
+              SINGLE_PROMPT_AGENT_NAME \
+              SINGLE_PROMPT_EVALUATION_AGENT_NAME; do
               agent_name="${!agent_name_var}"
               version=$(jq -er --arg name "$agent_name" '.[$name]' "$versions_file")
               if [[ "$version" == "latest" ]]; then
@@ -372,8 +405,8 @@ jobs:
               "HOSTED_AGENT_VERSION=$HOSTED_AGENT_VERSION" \
               "SINGLE_PROMPT_AGENT_NAME=$SINGLE_PROMPT_AGENT_NAME" \
               "SINGLE_PROMPT_AGENT_VERSION=$SINGLE_PROMPT_AGENT_VERSION" \
-              "MCP_TOOL_ENDPOINT=$MCP_TOOL_ENDPOINT" \
-              "MCP_FUNCTION_APP_CLIENT_ID=$MCP_ENTRA_CLIENT_ID" \
+              "SINGLE_PROMPT_EVALUATION_AGENT_NAME=$SINGLE_PROMPT_EVALUATION_AGENT_NAME" \
+              "SINGLE_PROMPT_EVALUATION_AGENT_VERSION=$SINGLE_PROMPT_EVALUATION_AGENT_VERSION" \
               "EVALUATION_JUDGE_MODEL=$EVALUATION_JUDGE_MODEL" \
               "ENTRA_TENANT_ID=$ENTRA_TENANT_ID" \
               "COSMOS_EVALUATION_CASE_CONTAINER=$COSMOS_EVALUATION_CASE_CONTAINER" \
@@ -492,7 +525,7 @@ jobs:
 
           jq -e \
             --arg hosted_version "$HOSTED_AGENT_VERSION" \
-            --arg single_version "$SINGLE_PROMPT_AGENT_VERSION" \
+            --arg single_version "$SINGLE_PROMPT_EVALUATION_AGENT_VERSION" \
             '.scenario_runs.agent_framework_workflow.agent_version == $hosted_version
              and .scenario_runs.single_prompt_agent.agent_version == $single_version' \
             "$run_response" >/dev/null

@@ -13,7 +13,11 @@ from azure.cosmos.exceptions import (
     CosmosResourceNotFoundError,
 )
 
-from tools.cosmos_client import get_approval_grant_container, get_container
+from tools.cosmos_client import (
+    get_approval_grant_container,
+    get_container,
+    get_conversation_container,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,21 @@ def _validate_arguments(arguments: dict) -> str | None:
         "approval_grant_id",
         "idempotency_key",
         "plan_hash",
+    )
+    for key in required_strings:
+        if not isinstance(arguments.get(key), str) or not arguments[key].strip():
+            return f"{key} is required"
+    if not isinstance(arguments.get("application_data"), dict):
+        return "application_data must be an object"
+    return None
+
+
+def _validate_direct_arguments(arguments: dict) -> str | None:
+    required_strings = (
+        "application_text",
+        "conversation_id",
+        "submission_token",
+        "policy_result",
     )
     for key in required_strings:
         if not isinstance(arguments.get(key), str) or not arguments[key].strip():
@@ -140,6 +159,85 @@ async def submit_travel_request(arguments: dict) -> dict:
         "Travel request %s stored for user %s",
         request_id,
         grant["user_id"],
+    )
+    return {
+        "success": True,
+        "duplicate": False,
+        "request_id": request_id,
+        "submitted_at": submitted_at,
+        "message": f"出張申請 {request_id} を登録しました。",
+    }
+
+
+async def submit_travel_request_with_approval(arguments: dict) -> dict:
+    """Persist a request after Foundry Agent Service approved the MCP call."""
+    validation_error = _validate_direct_arguments(arguments)
+    if validation_error:
+        return _failure(validation_error)
+
+    conversation_id = arguments["conversation_id"]
+    conversations = get_conversation_container()
+    try:
+        conversation = await conversations.read_item(
+            item=conversation_id,
+            partition_key=conversation_id,
+        )
+    except CosmosResourceNotFoundError:
+        return _failure("Conversation was not found")
+
+    if conversation.get("scenario") != "single_prompt_agent":
+        return _failure("Conversation is not a single Prompt Agent session")
+    if conversation.get("submission_token") != arguments["submission_token"]:
+        return _failure("Conversation submission token mismatch")
+
+    application_data = arguments["application_data"]
+    plan_hash = _plan_hash(application_data)
+    idempotency_key = hashlib.sha256(
+        f"foundry-mcp:{conversation_id}:{plan_hash}".encode("utf-8")
+    ).hexdigest()
+    request_id = f"TR-{idempotency_key[:12].upper()}"
+    requests = get_container()
+    try:
+        existing = await requests.read_item(
+            item=request_id,
+            partition_key=request_id,
+        )
+    except CosmosResourceNotFoundError:
+        existing = None
+    if existing:
+        return {
+            "success": True,
+            "duplicate": True,
+            "request_id": request_id,
+            "submitted_at": existing["submitted_at"],
+            "message": f"出張申請 {request_id} は登録済みです。",
+        }
+
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    document = {
+        "id": request_id,
+        "request_id": request_id,
+        "user_id": conversation["user_id"],
+        "conversation_id": conversation_id,
+        "idempotency_key": idempotency_key,
+        "plan_hash": plan_hash,
+        "approval_mode": "foundry_mcp",
+        "status": "submitted",
+        "submitted_at": submitted_at,
+        "application_text": arguments["application_text"],
+        "policy_result": arguments["policy_result"],
+        **application_data,
+    }
+    try:
+        await requests.create_item(document, if_none_match="*")
+    except CosmosHttpResponseError as exc:
+        if exc.status_code != 409:
+            raise
+
+    logger.info(
+        "Travel request %s stored for user %s through Foundry MCP approval",
+        request_id,
+        conversation["user_id"],
     )
     return {
         "success": True,

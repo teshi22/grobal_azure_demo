@@ -684,8 +684,8 @@ class EvaluationFoundryService:
                 for setting_name, value in (
                     ("HOSTED_AGENT_VERSION", settings.hosted_agent_version),
                     (
-                        "SINGLE_PROMPT_AGENT_VERSION",
-                        settings.single_prompt_agent_version,
+                        "SINGLE_PROMPT_EVALUATION_AGENT_VERSION",
+                        settings.single_prompt_evaluation_agent_version,
                     ),
                 )
                 if not value
@@ -818,8 +818,8 @@ def _scenario_target(
     if scenario == "agent_framework_workflow":
         return settings.hosted_agent_name, settings.hosted_agent_version
     return (
-        settings.single_prompt_agent_name,
-        settings.single_prompt_agent_version,
+        settings.single_prompt_evaluation_agent_name,
+        settings.single_prompt_evaluation_agent_version,
     )
 
 
@@ -1013,7 +1013,9 @@ def _stub_output(
         "case_id": case.id,
         "agent_versions": {
             "hosted": settings.hosted_agent_version or "stub",
-            "single": settings.single_prompt_agent_version or "stub",
+            "single": (
+                settings.single_prompt_evaluation_agent_version or "stub"
+            ),
         },
     }
     if case.expected_status == "needs_clarification":

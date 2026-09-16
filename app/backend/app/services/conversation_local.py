@@ -34,6 +34,7 @@ class LocalConversationStore:
             "user_id": user_id,
             "scenario": scenario,
             "interaction_mode": interaction_mode,
+            "submission_token": uuid.uuid4().hex,
             "status": "created",
             "foundry_response_id": None,
             "pending_request": None,

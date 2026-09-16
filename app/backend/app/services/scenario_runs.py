@@ -120,8 +120,8 @@ def _scenario_target(
     if scenario == "agent_framework_workflow":
         return settings.hosted_agent_name, settings.hosted_agent_version
     return (
-        settings.single_prompt_agent_name,
-        settings.single_prompt_agent_version,
+        settings.single_prompt_evaluation_agent_name,
+        settings.single_prompt_evaluation_agent_version,
     )
 
 

@@ -76,11 +76,17 @@ def deploy(
     client: AIProjectClient,
     *,
     model: str,
+    mcp_connection_id: str,
+    mcp_server_url: str,
 ) -> dict[str, str]:
     definitions = _load_definitions()
     deployed: dict[str, str] = {}
     for agent_spec in definitions.PROMPT_AGENT_SPECS:
-        definition = agent_spec.build_definition(model)
+        definition = agent_spec.build_definition(
+            model,
+            mcp_connection_id=mcp_connection_id,
+            mcp_server_url=mcp_server_url,
+        )
         definition_hash = _definition_hash(definition, agent_spec.description)
         existing = _matching_version(
             client,
@@ -124,6 +130,14 @@ def _parse_args() -> argparse.Namespace:
         default=os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-5.4"),
     )
     parser.add_argument(
+        "--mcp-connection-id",
+        default=os.getenv("FOUNDRY_MCP_CONNECTION_ID"),
+    )
+    parser.add_argument(
+        "--mcp-server-url",
+        default=os.getenv("MCP_TOOL_ENDPOINT"),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Also write the name-to-version JSON map to this path.",
@@ -133,6 +147,12 @@ def _parse_args() -> argparse.Namespace:
         parser.error(
             "--project-endpoint or FOUNDRY_PROJECT_ENDPOINT is required"
         )
+    if not args.mcp_connection_id:
+        parser.error(
+            "--mcp-connection-id or FOUNDRY_MCP_CONNECTION_ID is required"
+        )
+    if not args.mcp_server_url:
+        parser.error("--mcp-server-url or MCP_TOOL_ENDPOINT is required")
     return args
 
 
@@ -143,7 +163,12 @@ def main() -> None:
         endpoint=args.project_endpoint,
         credential=credential,
     ) as client:
-        versions = deploy(client, model=args.model)
+        versions = deploy(
+            client,
+            model=args.model,
+            mcp_connection_id=args.mcp_connection_id,
+            mcp_server_url=args.mcp_server_url,
+        )
 
     output = json.dumps(
         versions,

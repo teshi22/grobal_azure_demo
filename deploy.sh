@@ -6,6 +6,8 @@ LOCATION="${LOCATION:-japaneast}"
 AZURE_ENV_NAME="${AZURE_ENV_NAME:-travel-agent-local}"
 HOSTED_AGENT_NAME="${HOSTED_AGENT_NAME:-travel-request-agent}"
 SINGLE_PROMPT_AGENT_NAME="${SINGLE_PROMPT_AGENT_NAME:-travel-request-single-agent}"
+SINGLE_PROMPT_EVALUATION_AGENT_NAME="${SINGLE_PROMPT_EVALUATION_AGENT_NAME:-travel-request-single-evaluator}"
+MCP_CONNECTION_NAME="${MCP_CONNECTION_NAME:-travel-request-mcp}"
 CLARIFIER_AGENT_NAME="${CLARIFIER_AGENT_NAME:-travel-request-clarifier}"
 PLANNER_AGENT_NAME="${PLANNER_AGENT_NAME:-travel-request-planner}"
 POLICY_AGENT_NAME="${POLICY_AGENT_NAME:-travel-request-policy-narrator}"
@@ -91,6 +93,13 @@ require_command azd
 require_command jq
 require_command python
 require_command zip
+
+azd extension install azure.ai.projects
+azd extension install azure.ai.agents
+azd extension install azure.ai.connections
+if ! azd auth login --check-status >/dev/null 2>&1; then
+  azd auth login
+fi
 
 DEPLOY_WORK_ROOT=".deploy-tmp"
 DEPLOY_WORK_DIR="${DEPLOY_WORK_ROOT}/run-$(date -u +%Y%m%d%H%M%S)-$$"
@@ -206,6 +215,20 @@ ensure_role_assignment \
   "AcrPush" \
   "$acr_id"
 
+echo "Configuring Prompt Agent MCP connection..."
+MCP_CONNECTION_JSON=$(azd ai connection create "$MCP_CONNECTION_NAME" \
+  --project-endpoint "$PROJECT_ENDPOINT" \
+  --kind remote-tool \
+  --target "$MCP_TOOL_ENDPOINT" \
+  --auth-type project-managed-identity \
+  --audience "api://${MCP_ENTRA_CLIENT_ID}" \
+  --force \
+  --output json \
+  --no-prompt)
+MCP_CONNECTION_ID=$(jq -er \
+  '.id // .connectionId // .name' \
+  <<<"$MCP_CONNECTION_JSON")
+
 echo "Synchronizing versioned Prompt Agents..."
 python -m pip install \
   --quiet \
@@ -215,6 +238,8 @@ for attempt in {1..12}; do
   if python scripts/deploy-prompt-agents.py \
     --project-endpoint "$PROJECT_ENDPOINT" \
     --model "$MODEL_DEPLOYMENT_NAME" \
+    --mcp-connection-id "$MCP_CONNECTION_ID" \
+    --mcp-server-url "$MCP_TOOL_ENDPOINT" \
     --output "$PROMPT_AGENT_VERSIONS_FILE" \
     >/dev/null; then
     break
@@ -242,6 +267,7 @@ PLANNER_AGENT_VERSION=$(resolve_prompt_agent_version "$PLANNER_AGENT_NAME")
 POLICY_AGENT_VERSION=$(resolve_prompt_agent_version "$POLICY_AGENT_NAME")
 APPROVAL_AGENT_VERSION=$(resolve_prompt_agent_version "$APPROVAL_AGENT_NAME")
 SINGLE_PROMPT_AGENT_VERSION=$(resolve_prompt_agent_version "$SINGLE_PROMPT_AGENT_NAME")
+SINGLE_PROMPT_EVALUATION_AGENT_VERSION=$(resolve_prompt_agent_version "$SINGLE_PROMPT_EVALUATION_AGENT_NAME")
 
 echo "Packaging and deploying MCP Functions..."
 cp mcp-tools/function_app.py mcp-tools/host.json "$DEPLOY_DIR/"
@@ -280,11 +306,6 @@ az functionapp restart \
   --output none
 
 echo "Deploying the Foundry Hosted Agent..."
-azd extension install azure.ai.projects
-azd extension install azure.ai.agents
-if ! azd auth login --check-status >/dev/null 2>&1; then
-  azd auth login
-fi
 if ! azd env select "$AZURE_ENV_NAME" --no-prompt >/dev/null 2>&1; then
   azd env new "$AZURE_ENV_NAME" \
     --subscription "$SUBSCRIPTION_ID" \
@@ -387,8 +408,8 @@ DEPLOYED_REVISION=$(az containerapp update \
     "HOSTED_AGENT_VERSION=$HOSTED_AGENT_VERSION" \
     "SINGLE_PROMPT_AGENT_NAME=$SINGLE_PROMPT_AGENT_NAME" \
     "SINGLE_PROMPT_AGENT_VERSION=$SINGLE_PROMPT_AGENT_VERSION" \
-    "MCP_TOOL_ENDPOINT=$MCP_TOOL_ENDPOINT" \
-    "MCP_FUNCTION_APP_CLIENT_ID=$MCP_ENTRA_CLIENT_ID" \
+    "SINGLE_PROMPT_EVALUATION_AGENT_NAME=$SINGLE_PROMPT_EVALUATION_AGENT_NAME" \
+    "SINGLE_PROMPT_EVALUATION_AGENT_VERSION=$SINGLE_PROMPT_EVALUATION_AGENT_VERSION" \
     "EVALUATION_JUDGE_MODEL=$EVALUATION_JUDGE_MODEL" \
     "ENTRA_TENANT_ID=$ENTRA_TENANT_ID" \
     "COSMOS_EVALUATION_CASE_CONTAINER=$COSMOS_EVALUATION_CASE_CONTAINER" \
@@ -449,6 +470,8 @@ printf '%s\n' \
   "HOSTED_AGENT_VERSION=${HOSTED_AGENT_VERSION}" \
   "SINGLE_PROMPT_AGENT_NAME=${SINGLE_PROMPT_AGENT_NAME}" \
   "SINGLE_PROMPT_AGENT_VERSION=${SINGLE_PROMPT_AGENT_VERSION}" \
+  "SINGLE_PROMPT_EVALUATION_AGENT_NAME=${SINGLE_PROMPT_EVALUATION_AGENT_NAME}" \
+  "SINGLE_PROMPT_EVALUATION_AGENT_VERSION=${SINGLE_PROMPT_EVALUATION_AGENT_VERSION}" \
   "EVALUATION_JUDGE_MODEL=${EVALUATION_JUDGE_MODEL}" \
   "COSMOS_ENDPOINT=${COSMOS_ENDPOINT}" \
   "COSMOS_DATABASE=${COSMOS_DATABASE}" \
@@ -456,8 +479,6 @@ printf '%s\n' \
   "COSMOS_EVALUATION_RUN_CONTAINER=${COSMOS_EVALUATION_RUN_CONTAINER}" \
   "COSMOS_EVALUATION_RESULT_CONTAINER=${COSMOS_EVALUATION_RESULT_CONTAINER}" \
   "APPLICATIONINSIGHTS_CONNECTION_STRING=${APPINSIGHTS_CONNECTION_STRING}" \
-  "MCP_TOOL_ENDPOINT=${MCP_TOOL_ENDPOINT}" \
-  "MCP_FUNCTION_APP_CLIENT_ID=${MCP_ENTRA_CLIENT_ID}" \
   "ENTRA_TENANT_ID=${ENTRA_TENANT_ID}" \
   "ENTRA_CLIENT_ID=${WEB_ENTRA_CLIENT_ID}" \
   > .env
@@ -547,7 +568,7 @@ if [[ -f app/backend/app/routers/evaluations.py \
 
   jq -e \
     --arg hosted_version "$HOSTED_AGENT_VERSION" \
-    --arg single_version "$SINGLE_PROMPT_AGENT_VERSION" \
+    --arg single_version "$SINGLE_PROMPT_EVALUATION_AGENT_VERSION" \
     '.scenario_runs.agent_framework_workflow.agent_version == $hosted_version
      and .scenario_runs.single_prompt_agent.agent_version == $single_version' \
     "$run_response" >/dev/null

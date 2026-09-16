@@ -8,6 +8,7 @@ from typing import Any
 
 from azure.ai.projects.models import (
     FunctionTool,
+    MCPTool,
     PromptAgentDefinition,
     PromptAgentDefinitionTextOptions,
     TextResponseFormatJsonSchema,
@@ -133,7 +134,6 @@ REQUEST_INFO_PARAMETERS_SCHEMA: dict[str, Any] = {
                 "clarification",
                 "request_confirmation",
                 "plan_review",
-                "submit_confirmation",
             ],
         },
         "message": {"type": "string"},
@@ -142,20 +142,6 @@ REQUEST_INFO_PARAMETERS_SCHEMA: dict[str, Any] = {
                 CLARIFICATION_DATA_SCHEMA,
                 EXTRACTED_REQUEST_SCHEMA,
                 TRAVEL_PLAN_SCHEMA,
-                {
-                    "type": "object",
-                    "properties": {
-                        "application_text": {"type": "string"},
-                        "plan": TRAVEL_PLAN_SCHEMA,
-                        "policy_result": {"type": "string"},
-                    },
-                    "required": [
-                        "application_text",
-                        "plan",
-                        "policy_result",
-                    ],
-                    "additionalProperties": False,
-                },
             ]
         },
     },
@@ -273,18 +259,37 @@ class PromptAgentSpec:
     response_schema_name: str = ""
     web_search: bool = False
     request_info: bool = False
+    mcp_submission: bool = False
     require_tool: bool = False
 
     @property
     def instructions(self) -> str:
         return (PROMPTS_DIR / self.prompt_file).read_text(encoding="utf-8").strip()
 
-    def build_definition(self, model: str) -> PromptAgentDefinition:
+    def build_definition(
+        self,
+        model: str,
+        *,
+        mcp_connection_id: str = "",
+        mcp_server_url: str = "",
+    ) -> PromptAgentDefinition:
         tools = []
         if self.web_search:
             tools.append(build_web_search_tool())
         if self.request_info:
             tools.append(build_request_info_tool())
+        if self.mcp_submission:
+            if not mcp_connection_id or not mcp_server_url:
+                raise ValueError(
+                    "MCP connection ID and server URL are required "
+                    "for the submission agent"
+                )
+            tools.append(
+                build_submission_mcp_tool(
+                    connection_id=mcp_connection_id,
+                    server_url=mcp_server_url,
+                )
+            )
         text = None
         if self.response_schema is not None:
             text = PromptAgentDefinitionTextOptions(
@@ -330,6 +335,20 @@ def build_request_info_tool() -> FunctionTool:
     )
 
 
+def build_submission_mcp_tool(
+    *,
+    connection_id: str,
+    server_url: str,
+) -> MCPTool:
+    return MCPTool(
+        server_label="travel-request-submission",
+        server_url=server_url,
+        project_connection_id=connection_id,
+        allowed_tools=["submit_travel_request_with_approval"],
+        require_approval="always",
+    )
+
+
 PROMPT_AGENT_SPECS = (
     PromptAgentSpec(
         name="travel-request-clarifier",
@@ -364,9 +383,19 @@ PROMPT_AGENT_SPECS = (
             "Prompt Agent scenario."
         ),
         prompt_file="travel-request-single-agent.txt",
+        web_search=True,
+        request_info=True,
+        mcp_submission=True,
+    ),
+    PromptAgentSpec(
+        name="travel-request-single-evaluator",
+        description=(
+            "Runs the single Prompt Agent scenario with a strict evaluation "
+            "response schema and no interactive or submission tools."
+        ),
+        prompt_file="travel-request-single-agent.txt",
         response_schema=EVALUATION_OUTPUT_SCHEMA,
         response_schema_name="travel_evaluation_output",
         web_search=True,
-        request_info=True,
     ),
 )

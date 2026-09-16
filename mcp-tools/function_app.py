@@ -7,7 +7,10 @@ import json
 import logging
 
 import azure.functions as func
-from tools.submit_travel_request import submit_travel_request
+from tools.submit_travel_request import (
+    submit_travel_request,
+    submit_travel_request_with_approval,
+)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -56,6 +59,44 @@ MCP_TOOLS = [
             ],
         },
     },
+    {
+        "name": "submit_travel_request_with_approval",
+        "description": (
+            "Foundry MCP approval後に、単一Prompt Agentの出張申請を登録する"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "application_text": {
+                    "type": "string",
+                    "description": "出張申請書のテキスト",
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "BFFが発行した会話ID",
+                },
+                "submission_token": {
+                    "type": "string",
+                    "description": "会話に結び付いた不透明な送信トークン",
+                },
+                "application_data": {
+                    "type": "object",
+                    "description": "承認対象の構造化された出張申請データ",
+                },
+                "policy_result": {
+                    "type": "string",
+                    "description": "利用者へ提示した旅費規程の判定結果",
+                },
+            },
+            "required": [
+                "application_text",
+                "conversation_id",
+                "submission_token",
+                "application_data",
+                "policy_result",
+            ],
+        },
+    },
 ]
 
 
@@ -92,6 +133,12 @@ async def mcp_handler(req: func.HttpRequest) -> func.HttpResponse:
 
         if tool_name == "submit_travel_request":
             tool_result = await submit_travel_request(arguments)
+        elif tool_name == "submit_travel_request_with_approval":
+            tool_result = await submit_travel_request_with_approval(arguments)
+        else:
+            tool_result = None
+
+        if tool_result is not None:
             result = {
                 "content": [{"type": "text", "text": json.dumps(tool_result, ensure_ascii=False)}],
                 "isError": not tool_result.get("success", False),
