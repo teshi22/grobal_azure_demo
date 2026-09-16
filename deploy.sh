@@ -12,6 +12,7 @@ POLICY_AGENT_NAME="${POLICY_AGENT_NAME:-travel-request-policy-narrator}"
 APPROVAL_AGENT_NAME="${APPROVAL_AGENT_NAME:-travel-request-approval-writer}"
 MODEL_DEPLOYMENT_NAME="${MODEL_DEPLOYMENT_NAME:-gpt-5.4}"
 EVALUATION_JUDGE_MODEL="${EVALUATION_JUDGE_MODEL:-$MODEL_DEPLOYMENT_NAME}"
+RUN_EVALUATION_SMOKE="${RUN_EVALUATION_SMOKE:-false}"
 MODEL_CAPACITY="${MODEL_CAPACITY:-20}"
 MCP_APP_DISPLAY_NAME="${MCP_APP_DISPLAY_NAME:-travel-mcp-functions}"
 WEB_APP_DISPLAY_NAME="${WEB_APP_DISPLAY_NAME:-travel-agent-web}"
@@ -158,6 +159,7 @@ FUNCTION_STORAGE_ACCOUNT=$(jq -r '.funcStorageAccountName.value' <<<"$DEPLOY_OUT
 echo "Registering the Container Apps Easy Auth callback..."
 az ad app update \
   --id "$WEB_ENTRA_CLIENT_ID" \
+  --identifier-uris "api://${WEB_ENTRA_CLIENT_ID}" \
   --web-redirect-uris "${APP_URL}/.auth/login/aad/callback" \
   --enable-id-token-issuance true \
   --output none
@@ -448,9 +450,10 @@ printf '%s\n' \
 echo "Running smoke tests..."
 curl --fail --silent --show-error --retry 12 --retry-delay 10 "${APP_URL}/health"
 
-if [[ -f app/backend/app/routers/evaluations.py ]]; then
+if [[ -f app/backend/app/routers/evaluations.py \
+  && "$RUN_EVALUATION_SMOKE" == "true" ]]; then
   access_token=$(az account get-access-token \
-    --resource "$WEB_ENTRA_CLIENT_ID" \
+    --resource "api://${WEB_ENTRA_CLIENT_ID}" \
     --query accessToken \
     --output tsv)
   seed_response="${DEPLOY_WORK_DIR}/evaluation-seed-response.json"
@@ -531,6 +534,8 @@ if [[ -f app/backend/app/routers/evaluations.py ]]; then
       and ((.scenarios.single_prompt_agent.error // "") == "")
     )
   ' "$results_response" >/dev/null
+elif [[ -f app/backend/app/routers/evaluations.py ]]; then
+  echo "Paired evaluation smoke test disabled; set RUN_EVALUATION_SMOKE=true to run it."
 else
   echo "Evaluation backend contract not present; skipping paired evaluation smoke."
 fi

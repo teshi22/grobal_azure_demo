@@ -143,6 +143,7 @@ resource foundryProjectRef 'Microsoft.CognitiveServices/accounts/projects@2025-0
 }
 
 var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
 var cognitiveServicesOpenAIUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 
 // バッチ評価はプロジェクトの Managed Identity で実行される。
@@ -153,6 +154,20 @@ resource projectFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01'
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       foundryUserRoleId
+    )
+    principalId: aiProject.outputs.projectPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// 生成された評価器はプロジェクトの Managed Identity で Judge モデルを呼び出す。
+resource projectCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(foundryAccountRef.id, 'project-managed-identity', cognitiveServicesUserRoleId)
+  scope: foundryAccountRef
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      cognitiveServicesUserRoleId
     )
     principalId: aiProject.outputs.projectPrincipalId
     principalType: 'ServicePrincipal'

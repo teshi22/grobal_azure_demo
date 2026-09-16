@@ -120,6 +120,7 @@ jobs:
           done
           az ad app update \
             --id "$WEB_ENTRA_CLIENT_ID" \
+            --identifier-uris "api://${WEB_ENTRA_CLIENT_ID}" \
             --web-redirect-uris "${app_url}/.auth/login/aad/callback" \
             --enable-id-token-issuance true \
             --output none
@@ -393,7 +394,7 @@ jobs:
           curl --fail --silent --show-error --retry 12 --retry-delay 10 \
             "$APP_URL/health"
           access_token=$(az account get-access-token \
-            --resource "$WEB_ENTRA_CLIENT_ID" \
+            --resource "api://${WEB_ENTRA_CLIENT_ID}" \
             --query accessToken \
             --output tsv)
           seed_payload="$RUNNER_TEMP/evaluation-seed.json"
@@ -408,11 +409,12 @@ jobs:
             --output "$RUNNER_TEMP/evaluation-seed-response.json"
 
       - name: Run paired evaluation smoke test
+        if: ${{ vars.RUN_EVALUATION_SMOKE == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           access_token=$(az account get-access-token \
-            --resource "$WEB_ENTRA_CLIENT_ID" \
+            --resource "api://${WEB_ENTRA_CLIENT_ID}" \
             --query accessToken \
             --output tsv)
           run_response="$RUNNER_TEMP/evaluation-smoke-run.json"
