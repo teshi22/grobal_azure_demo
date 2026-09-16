@@ -102,7 +102,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'app'
-          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld@sha256:7ab9698944af677cf77ae67d0a5c54595609e93adeb42babc154b9380a565539'
+          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld@sha256:e9b3e7c34664c7cffd7144864b0e4eec369bfde80068f9095dc63b37058bec48'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
