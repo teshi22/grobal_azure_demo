@@ -18,16 +18,18 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _project_client: AIProjectClient | None = None
+_credential: DefaultAzureCredential | None = None
 _hosted_responses = None
 
 
 def get_project_client() -> AIProjectClient:
-    global _project_client
+    global _project_client, _credential
     if _project_client is None:
-        credential = DefaultAzureCredential()
+        _credential = DefaultAzureCredential()
         _project_client = AIProjectClient(
             endpoint=settings.azure_ai_project_endpoint,
-            credential=credential,
+            credential=_credential,
+            allow_preview=True,
         )
         logger.info("AIProjectClient initialized")
     return _project_client
@@ -95,3 +97,14 @@ def response_to_dict(response: Any) -> dict[str, Any]:
     if hasattr(response, "to_dict"):
         return response.to_dict()
     raise TypeError(f"Unsupported response type: {type(response)!r}")
+
+
+def close_foundry_client() -> None:
+    global _project_client, _credential, _hosted_responses
+    _hosted_responses = None
+    if _project_client is not None:
+        _project_client.close()
+        _project_client = None
+    if _credential is not None:
+        _credential.close()
+        _credential = None

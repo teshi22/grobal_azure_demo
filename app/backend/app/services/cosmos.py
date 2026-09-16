@@ -13,6 +13,7 @@ from typing import Any
 from azure.core import MatchConditions
 from azure.cosmos.aio import CosmosClient, ContainerProxy
 from azure.cosmos.exceptions import (
+    CosmosBatchOperationError,
     CosmosHttpResponseError,
     CosmosResourceNotFoundError,
 )
@@ -28,6 +29,21 @@ _conversation_store: ConversationStore | None = None
 _event_store: EventStore | None = None
 _travel_request_store: TravelRequestStore | None = None
 _approval_grant_store: ApprovalGrantStore | None = None
+_evaluation_case_store: EvaluationCaseStore | None = None
+_evaluation_run_store: EvaluationRunStore | None = None
+_evaluation_result_store: EvaluationResultStore | None = None
+
+
+class StoreNotFoundError(LookupError):
+    """The requested Cosmos document does not exist."""
+
+
+class StoreConflictError(RuntimeError):
+    """A create or optimistic-concurrency operation conflicted."""
+
+
+class StorePersistenceError(RuntimeError):
+    """A Cosmos write failed for a reason other than a conflict."""
 
 
 def get_cosmos_client() -> CosmosClient:
@@ -45,12 +61,22 @@ def get_cosmos_client() -> CosmosClient:
 
 async def close_cosmos_client() -> None:
     global _cosmos_client, _credential
+    global _conversation_store, _event_store, _travel_request_store
+    global _approval_grant_store, _evaluation_case_store
+    global _evaluation_run_store, _evaluation_result_store
     if _cosmos_client is not None:
         await _cosmos_client.close()
         _cosmos_client = None
     if _credential is not None:
         await _credential.close()
         _credential = None
+    _conversation_store = None
+    _event_store = None
+    _travel_request_store = None
+    _approval_grant_store = None
+    _evaluation_case_store = None
+    _evaluation_run_store = None
+    _evaluation_result_store = None
 
 
 def _get_container(container_name: str) -> ContainerProxy:
@@ -384,3 +410,432 @@ def get_approval_grant_store() -> ApprovalGrantStore:
     if _approval_grant_store is None:
         _approval_grant_store = ApprovalGrantStore()
     return _approval_grant_store
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_conflict(exc: CosmosHttpResponseError) -> bool:
+    return exc.status_code in (409, 412)
+
+
+class EvaluationCaseStore:
+    """Versioned evaluation cases partitioned by dataset ID."""
+
+    def __init__(self):
+        self._container = _get_container(
+            settings.cosmos_evaluation_case_container
+        )
+
+    async def list(
+        self,
+        dataset_id: str,
+        *,
+        enabled: bool | None = None,
+    ) -> list[dict]:
+        query = "SELECT * FROM c WHERE c.dataset_id = @dataset_id"
+        parameters: list[dict[str, Any]] = [
+            {"name": "@dataset_id", "value": dataset_id}
+        ]
+        if enabled is not None:
+            query += " AND c.enabled = @enabled"
+            parameters.append({"name": "@enabled", "value": enabled})
+        query += " ORDER BY c.id"
+        return [
+            item
+            async for item in self._container.query_items(
+                query=query,
+                parameters=parameters,
+                partition_key=dataset_id,
+            )
+        ]
+
+    async def get(self, case_id: str, dataset_id: str) -> dict | None:
+        try:
+            return await self._container.read_item(
+                item=case_id,
+                partition_key=dataset_id,
+            )
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def create(self, case: dict[str, Any], creator_id: str) -> dict:
+        now = _now()
+        item = {
+            **case,
+            "version": 1,
+            "created_by": creator_id,
+            "updated_by": creator_id,
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            return await self._container.create_item(
+                item,
+                if_none_match="*",
+            )
+        except CosmosHttpResponseError as exc:
+            if _is_conflict(exc):
+                raise StoreConflictError(
+                    f"Evaluation case {item['id']} already exists"
+                ) from exc
+            raise StorePersistenceError(
+                f"Failed to create evaluation case {item['id']}: {exc}"
+            ) from exc
+
+    async def update(
+        self,
+        case_id: str,
+        dataset_id: str,
+        changes: dict[str, Any],
+        *,
+        expected_version: int,
+        updated_by: str,
+    ) -> dict:
+        item = await self.get(case_id, dataset_id)
+        if item is None:
+            raise StoreNotFoundError(
+                f"Evaluation case {case_id} not found"
+            )
+        if int(item.get("version", 1)) != expected_version:
+            raise StoreConflictError(
+                f"Evaluation case {case_id} was modified"
+            )
+        item.update(changes)
+        item["id"] = case_id
+        item["dataset_id"] = dataset_id
+        item["version"] = expected_version + 1
+        item["updated_by"] = updated_by
+        item["updated_at"] = _now()
+        try:
+            return await self._container.replace_item(
+                item=case_id,
+                body=item,
+                etag=item.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if _is_conflict(exc):
+                raise StoreConflictError(
+                    f"Evaluation case {case_id} was modified"
+                ) from exc
+            raise StorePersistenceError(
+                f"Failed to update evaluation case {case_id}: {exc}"
+            ) from exc
+
+
+def get_evaluation_case_store() -> EvaluationCaseStore:
+    global _evaluation_case_store
+    if _evaluation_case_store is None:
+        if settings.evaluation_mode == "stub":
+            from app.services.evaluation_local import LocalEvaluationCaseStore
+
+            _evaluation_case_store = LocalEvaluationCaseStore()
+        else:
+            _evaluation_case_store = EvaluationCaseStore()
+    return _evaluation_case_store
+
+
+class EvaluationRunStore:
+    """Comparison run metadata partitioned by its ID."""
+
+    def __init__(self):
+        self._container = _get_container(
+            settings.cosmos_evaluation_run_container
+        )
+
+    async def list(self, limit: int = 50) -> list[dict]:
+        query = "SELECT TOP @limit * FROM c ORDER BY c.created_at DESC"
+        return [
+            item
+            async for item in self._container.query_items(
+                query=query,
+                parameters=[{"name": "@limit", "value": limit}],
+            )
+        ]
+
+    async def get(self, comparison_id: str) -> dict | None:
+        try:
+            return await self._container.read_item(
+                item=comparison_id,
+                partition_key=comparison_id,
+            )
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def create(self, run: dict[str, Any], creator_id: str) -> dict:
+        now = _now()
+        item = {
+            **run,
+            "version": 1,
+            "created_by": creator_id,
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            return await self._container.create_item(
+                item,
+                if_none_match="*",
+            )
+        except CosmosHttpResponseError as exc:
+            if _is_conflict(exc):
+                raise StoreConflictError(
+                    f"Evaluation run {item['id']} already exists"
+                ) from exc
+            raise StorePersistenceError(
+                f"Failed to create evaluation run {item['id']}: {exc}"
+            ) from exc
+
+    async def update(
+        self,
+        comparison_id: str,
+        changes: dict[str, Any],
+        *,
+        expected_version: int,
+    ) -> dict:
+        item = await self.get(comparison_id)
+        if item is None:
+            raise StoreNotFoundError(
+                f"Evaluation run {comparison_id} not found"
+            )
+        if int(item.get("version", 1)) != expected_version:
+            raise StoreConflictError(
+                f"Evaluation run {comparison_id} was modified"
+            )
+        item.update(changes)
+        item["id"] = comparison_id
+        item["version"] = expected_version + 1
+        item["updated_at"] = _now()
+        try:
+            return await self._container.replace_item(
+                item=comparison_id,
+                body=item,
+                etag=item.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if _is_conflict(exc):
+                raise StoreConflictError(
+                    f"Evaluation run {comparison_id} was modified"
+                ) from exc
+            raise StorePersistenceError(
+                f"Failed to update evaluation run {comparison_id}: {exc}"
+            ) from exc
+
+
+def get_evaluation_run_store() -> EvaluationRunStore:
+    global _evaluation_run_store
+    if _evaluation_run_store is None:
+        if settings.evaluation_mode == "stub":
+            from app.services.evaluation_local import LocalEvaluationRunStore
+
+            _evaluation_run_store = LocalEvaluationRunStore()
+        else:
+            _evaluation_run_store = EvaluationRunStore()
+    return _evaluation_run_store
+
+
+class EvaluationResultStore:
+    """Per-case paired results partitioned by comparison ID."""
+
+    def __init__(self):
+        self._container = _get_container(
+            settings.cosmos_evaluation_result_container
+        )
+
+    async def list(self, comparison_id: str) -> list[dict]:
+        query = (
+            "SELECT * FROM c WHERE c.comparison_id = @comparison_id "
+            "ORDER BY c.case_id"
+        )
+        return [
+            item
+            async for item in self._container.query_items(
+                query=query,
+                parameters=[
+                    {
+                        "name": "@comparison_id",
+                        "value": comparison_id,
+                    }
+                ],
+                partition_key=comparison_id,
+            )
+        ]
+
+    async def get(
+        self,
+        comparison_id: str,
+        case_id: str,
+    ) -> dict | None:
+        try:
+            return await self._container.read_item(
+                item=case_id,
+                partition_key=comparison_id,
+            )
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def create(self, result: dict[str, Any]) -> dict:
+        now = _now()
+        item = {
+            **result,
+            "id": result["case_id"],
+            "version": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            return await self._container.create_item(
+                item,
+                if_none_match="*",
+            )
+        except CosmosHttpResponseError as exc:
+            if _is_conflict(exc):
+                raise StoreConflictError(
+                    "Evaluation result "
+                    f"{item['comparison_id']}/{item['case_id']} exists"
+                ) from exc
+            raise StorePersistenceError(
+                "Failed to create evaluation result "
+                f"{item['comparison_id']}/{item['case_id']}: {exc}"
+            ) from exc
+
+    async def create_many(
+        self,
+        comparison_id: str,
+        results: list[dict[str, Any]],
+    ) -> list[dict]:
+        now = _now()
+        items = [
+            {
+                **result,
+                "id": result["case_id"],
+                "comparison_id": comparison_id,
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for result in results
+        ]
+        operations = [("create", (item,)) for item in items]
+        try:
+            await self._container.execute_item_batch(
+                batch_operations=operations,
+                partition_key=comparison_id,
+            )
+        except (CosmosHttpResponseError, CosmosBatchOperationError) as exc:
+            if getattr(exc, "status_code", None) in (409, 412):
+                raise StoreConflictError(
+                    f"Evaluation results for {comparison_id} already exist"
+                ) from exc
+            raise StorePersistenceError(
+                f"Failed to create evaluation results for {comparison_id}: "
+                f"{exc}"
+            ) from exc
+        return items
+
+    async def update(
+        self,
+        comparison_id: str,
+        case_id: str,
+        changes: dict[str, Any],
+        *,
+        expected_version: int,
+    ) -> dict:
+        item = await self.get(comparison_id, case_id)
+        if item is None:
+            raise StoreNotFoundError(
+                f"Evaluation result {comparison_id}/{case_id} not found"
+            )
+        if int(item.get("version", 1)) != expected_version:
+            raise StoreConflictError(
+                f"Evaluation result {comparison_id}/{case_id} was modified"
+            )
+        item.update(changes)
+        item["id"] = case_id
+        item["comparison_id"] = comparison_id
+        item["case_id"] = case_id
+        item["version"] = expected_version + 1
+        item["updated_at"] = _now()
+        try:
+            return await self._container.replace_item(
+                item=case_id,
+                body=item,
+                etag=item.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if _is_conflict(exc):
+                raise StoreConflictError(
+                    f"Evaluation result {comparison_id}/{case_id} was modified"
+                ) from exc
+            raise StorePersistenceError(
+                "Failed to update evaluation result "
+                f"{comparison_id}/{case_id}: {exc}"
+            ) from exc
+
+    async def update_scenario(
+        self,
+        comparison_id: str,
+        case_id: str,
+        scenario: str,
+        scenario_result: dict[str, Any] | None,
+        *,
+        status: str,
+        error: str = "",
+        expected_version: int,
+    ) -> dict:
+        current = await self.get(comparison_id, case_id)
+        if current is None:
+            raise StoreNotFoundError(
+                f"Evaluation result {comparison_id}/{case_id} not found"
+            )
+        scenarios = dict(current.get("scenarios") or {})
+        scenario_statuses = dict(current.get("scenario_statuses") or {})
+        scenario_errors = dict(current.get("scenario_errors") or {})
+        scenarios[scenario] = scenario_result
+        scenario_statuses[scenario] = status
+        if error:
+            scenario_errors[scenario] = error
+        else:
+            scenario_errors.pop(scenario, None)
+        return await self.update(
+            comparison_id,
+            case_id,
+            {
+                "scenarios": scenarios,
+                "scenario_statuses": scenario_statuses,
+                "scenario_errors": scenario_errors,
+            },
+            expected_version=expected_version,
+        )
+
+    async def update_human_review(
+        self,
+        comparison_id: str,
+        case_id: str,
+        review: dict[str, Any],
+        *,
+        expected_version: int,
+    ) -> dict:
+        return await self.update(
+            comparison_id,
+            case_id,
+            {"human_review": review},
+            expected_version=expected_version,
+        )
+
+
+def get_evaluation_result_store() -> EvaluationResultStore:
+    global _evaluation_result_store
+    if _evaluation_result_store is None:
+        if settings.evaluation_mode == "stub":
+            from app.services.evaluation_local import (
+                LocalEvaluationResultStore,
+            )
+
+            _evaluation_result_store = LocalEvaluationResultStore()
+        else:
+            _evaluation_result_store = EvaluationResultStore()
+    return _evaluation_result_store

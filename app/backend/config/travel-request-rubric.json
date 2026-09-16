@@ -1,0 +1,35 @@
+{
+  "name": "travel-request-quality-v1",
+  "updated_at": "2026-09-14",
+  "dimensions": [
+    {
+      "name": "request_and_date_resolution",
+      "weight": 25,
+      "description": "必須情報を推測せず抽出し、日付を一貫して解決できている"
+    },
+    {
+      "name": "itinerary_and_fare_evidence",
+      "weight": 25,
+      "description": "旅程が実行可能で、区間ごとの運賃種別、金額、信頼できる根拠がある"
+    },
+    {
+      "name": "policy_reasoning",
+      "weight": 20,
+      "description": "旅費規程を正しく適用し、違反と修正内容を説明できている"
+    },
+    {
+      "name": "application_completeness",
+      "weight": 20,
+      "description": "承認判断に必要な情報がそろった明瞭な申請案になっている"
+    },
+    {
+      "name": "uncertainty_and_clarity",
+      "weight": 10,
+      "description": "不足情報を捏造せず、不確実性と確認事項を明確に扱っている"
+    }
+  ],
+  "composite": {
+    "foundry_rubric_weight": 0.6,
+    "deterministic_weight": 0.4
+  }
+}

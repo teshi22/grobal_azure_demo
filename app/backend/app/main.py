@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import conversations, stream, travel_requests
+from app.routers import conversations, evaluations, stream, travel_requests
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -35,31 +35,61 @@ async def lifespan(app: FastAPI):
         close_cosmos_client,
         get_conversation_store,
         get_cosmos_client,
+        get_evaluation_case_store,
+        get_evaluation_result_store,
+        get_evaluation_run_store,
     )
 
-    app.state.cosmos_client = get_cosmos_client()
-    logger.info("Cosmos DB client initialized")
+    from app.services.evaluation_foundry import get_evaluation_service
+    get_evaluation_service()
+    logger.info("Evaluation service initialized")
 
-    store = get_conversation_store()
-    await store.get("__warmup__")
-    logger.info("Cosmos DB connection pre-warmed")
+    recovery_task = None
+    if settings.evaluation_mode == "stub":
+        app.state.cosmos_client = None
+        from app.services.evaluation_cases import (
+            seed_default_evaluation_cases,
+        )
 
-    from app.services.foundry import get_hosted_responses_client
-    get_hosted_responses_client()
-    logger.info("Hosted Agent Responses client pre-warmed")
+        await seed_default_evaluation_cases(
+            get_evaluation_case_store(),
+            user_id="local-seed",
+        )
+        logger.info("Local evaluation stub initialized")
+    else:
+        app.state.cosmos_client = get_cosmos_client()
+        logger.info("Cosmos DB client initialized")
 
-    from app.services.hosted_agent import recover_pending_messages
+        store = get_conversation_store()
+        await store.get("__warmup__")
+        await get_evaluation_case_store().get("__warmup__", "__warmup__")
+        await get_evaluation_run_store().get("__warmup__")
+        await get_evaluation_result_store().get("__warmup__", "__warmup__")
+        logger.info("Cosmos DB connection pre-warmed")
 
-    recovery_task = asyncio.create_task(
-        recover_pending_messages(),
-        name="conversation-recovery",
-    )
+        from app.services.foundry import get_hosted_responses_client
+
+        get_hosted_responses_client()
+        logger.info("Hosted Agent Responses client pre-warmed")
+
+        from app.services.hosted_agent import recover_pending_messages
+
+        recovery_task = asyncio.create_task(
+            recover_pending_messages(),
+            name="conversation-recovery",
+        )
     try:
         yield
     finally:
-        recovery_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await recovery_task
+        if recovery_task is not None:
+            recovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await recovery_task
+    from app.services.evaluation_foundry import close_evaluation_service
+    from app.services.foundry import close_foundry_client
+
+    close_evaluation_service()
+    close_foundry_client()
     await close_cosmos_client()
     logger.info("Shutdown complete")
 
@@ -104,6 +134,7 @@ if settings.cors_origins:
 
 # API ルート
 app.include_router(conversations.router, prefix="/api")
+app.include_router(evaluations.router, prefix="/api")
 app.include_router(stream.router, prefix="/api")
 app.include_router(travel_requests.router, prefix="/api")
 

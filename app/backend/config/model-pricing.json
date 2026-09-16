@@ -1,0 +1,15 @@
+{
+  "currency": "USD",
+  "unit": "per_1m_tokens",
+  "updated_at": "2026-09-15",
+  "source": "https://learn.microsoft.com/en-us/answers/questions/5841927/pricing-for-gpt-5-4-5-4-mini-5-4-nano",
+  "deployment_sku": "GlobalStandard",
+  "models": {
+    "gpt-5.4": {
+      "input": 2.5,
+      "cached_input": 0.25,
+      "output": 15.0,
+      "max_context_pricing_band": "under_272k"
+    }
+  }
+}
