@@ -377,7 +377,7 @@ az containerapp ingress update \
   --resource-group "$RESOURCE_GROUP" \
   --target-port 8000 \
   --output none
-az containerapp update \
+DEPLOYED_REVISION=$(az containerapp update \
   --name "$APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
   --image "${ACR_LOGIN_SERVER}/${IMAGE_TAG}" \
@@ -394,7 +394,38 @@ az containerapp update \
     "COSMOS_EVALUATION_CASE_CONTAINER=$COSMOS_EVALUATION_CASE_CONTAINER" \
     "COSMOS_EVALUATION_RUN_CONTAINER=$COSMOS_EVALUATION_RUN_CONTAINER" \
     "COSMOS_EVALUATION_RESULT_CONTAINER=$COSMOS_EVALUATION_RESULT_CONTAINER" \
-  --output none
+  --query properties.latestRevisionName \
+  --output tsv)
+
+echo "Waiting for Container App revision ${DEPLOYED_REVISION}..."
+for attempt in {1..30}; do
+  revision_health=$(az containerapp revision show \
+    --name "$APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --revision "$DEPLOYED_REVISION" \
+    --query properties.healthState \
+    --output tsv)
+  latest_ready_revision=$(az containerapp show \
+    --name "$APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query properties.latestReadyRevisionName \
+    --output tsv)
+  if [[ "$revision_health" == "Healthy" \
+    && "$latest_ready_revision" == "$DEPLOYED_REVISION" ]]; then
+    break
+  fi
+  if [[ "$attempt" -eq 30 ]]; then
+    echo "Container App revision ${DEPLOYED_REVISION} did not become healthy." >&2
+    az containerapp revision show \
+      --name "$APP_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --revision "$DEPLOYED_REVISION" \
+      --query '{health:properties.healthState,runningState:properties.runningState,details:properties.runningStateDetails}' \
+      --output json >&2
+    exit 1
+  fi
+  sleep 10
+done
 
 AZURE_SUBSCRIPTION_ID="$SUBSCRIPTION_ID" \
 AZURE_AI_PROJECT_ENDPOINT="$PROJECT_ENDPOINT" \

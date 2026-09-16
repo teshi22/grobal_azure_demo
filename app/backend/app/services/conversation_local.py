@@ -146,6 +146,7 @@ class LocalEventStore:
     def __init__(self):
         self._items: dict[str, list[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
+        self._last_event_ns = 0
 
     async def append(
         self,
@@ -155,23 +156,25 @@ class LocalEventStore:
         message_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> str:
-        event_cursor = f"{time.time_ns():020d}-{uuid.uuid4().hex}"
         serialized = (
             json.dumps(data, ensure_ascii=False)
             if isinstance(data, dict)
             else data
         )
-        item = {
-            "id": str(uuid.uuid4()),
-            "conversation_id": conversation_id,
-            "event_cursor": event_cursor,
-            "event_type": event_type,
-            "data": serialized,
-            "message_id": message_id,
-            "idempotency_key": idempotency_key,
-            "timestamp": _now(),
-        }
         async with self._lock:
+            event_ns = max(time.time_ns(), self._last_event_ns + 1)
+            self._last_event_ns = event_ns
+            event_cursor = f"{event_ns:020d}-{uuid.uuid4().hex}"
+            item = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "event_cursor": event_cursor,
+                "event_type": event_type,
+                "data": serialized,
+                "message_id": message_id,
+                "idempotency_key": idempotency_key,
+                "timestamp": _now(),
+            }
             self._items.setdefault(conversation_id, []).append(item)
         return event_cursor
 

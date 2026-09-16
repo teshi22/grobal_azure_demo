@@ -26,6 +26,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
 
+RUN AZURE_AI_PROJECT_ENDPOINT=https://example.services.ai.azure.com/api/projects/build-smoke \
+    python -c "import app.main"
+
 # フロントエンドビルド成果物をコピー
 COPY --from=frontend-builder /build/out /app/static
 

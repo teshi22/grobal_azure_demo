@@ -140,6 +140,8 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
           step: data.type,
           label: "あなたの入力を待っています",
         });
+        retryRef.current = null;
+        setCanRetry(false);
         setLoading(false);
         closeSSE();
       });
@@ -173,6 +175,8 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
         setHitlRequest(null);
         setStatus({ step: "complete", label: "完了" });
         setIsComplete(true);
+        retryRef.current = null;
+        setCanRetry(false);
         setLoading(false);
         closeSSE();
       });
@@ -192,6 +196,7 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
             eventType: "error",
           });
           setStatus({ step: "error", label: "エラー" });
+          setCanRetry(retryRef.current !== null);
           closeSSE();
         }
         setLoading(false);
@@ -268,7 +273,7 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
         await sendMessage(convId, trimmed, idempotencyKey);
         if (generationRef.current !== generation) return false;
 
-        retryRef.current = null;
+        retryRef.current = { content: trimmed };
         setCanRetry(false);
         if (hitlMessageBeingAnswered) {
           setMessages((current) =>

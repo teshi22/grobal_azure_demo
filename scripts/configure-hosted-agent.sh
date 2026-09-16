@@ -68,6 +68,10 @@ bff_principal_id=$(az containerapp show \
   --name "$CONTAINER_APP_NAME" \
   --query identity.principalId \
   --output tsv)
+bff_client_id=$(az ad sp show \
+  --id "$bff_principal_id" \
+  --query appId \
+  --output tsv)
 
 impersonation_role_name="Foundry Agent User Identity Impersonation ${FOUNDRY_ACCOUNT_RESOURCE_ID##*/}"
 if [[ -z "$(az role definition list \
@@ -147,8 +151,9 @@ auth_config=$(az rest \
   --method GET \
   --url "https://management.azure.com${function_auth_id}?api-version=2024-04-01")
 auth_config=$(jq \
-  --arg client_id "$agent_client_id" \
-  '.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications = [$client_id]
+  --arg agent_client_id "$agent_client_id" \
+  --arg bff_client_id "$bff_client_id" \
+  '.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications = ([$agent_client_id, $bff_client_id] | unique)
    | {properties: .properties}' \
   <<<"$auth_config")
 az rest \
@@ -157,4 +162,4 @@ az rest \
   --body "$auth_config" \
   --output none
 
-echo "Configured Hosted Agent identity ${agent_principal_id}, including Application Insights ingestion."
+echo "Configured Hosted Agent identity ${agent_principal_id} and BFF identity ${bff_principal_id}, including MCP access."

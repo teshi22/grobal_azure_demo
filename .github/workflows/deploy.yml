@@ -362,7 +362,7 @@ jobs:
             --resource-group "$RESOURCE_GROUP" \
             --target-port 8000 \
             --output none
-          az containerapp update \
+          deployed_revision=$(az containerapp update \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --image "${ACR_LOGIN_SERVER}/${image_tag}" \
@@ -379,7 +379,38 @@ jobs:
               "COSMOS_EVALUATION_CASE_CONTAINER=$COSMOS_EVALUATION_CASE_CONTAINER" \
               "COSMOS_EVALUATION_RUN_CONTAINER=$COSMOS_EVALUATION_RUN_CONTAINER" \
               "COSMOS_EVALUATION_RESULT_CONTAINER=$COSMOS_EVALUATION_RESULT_CONTAINER" \
-            --output none
+            --query properties.latestRevisionName \
+            --output tsv)
+
+          echo "Waiting for Container App revision ${deployed_revision}..."
+          for attempt in {1..30}; do
+            revision_health=$(az containerapp revision show \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --revision "$deployed_revision" \
+              --query properties.healthState \
+              --output tsv)
+            latest_ready_revision=$(az containerapp show \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query properties.latestReadyRevisionName \
+              --output tsv)
+            if [[ "$revision_health" == "Healthy" \
+              && "$latest_ready_revision" == "$deployed_revision" ]]; then
+              break
+            fi
+            if [[ "$attempt" -eq 30 ]]; then
+              echo "Container App revision ${deployed_revision} did not become healthy." >&2
+              az containerapp revision show \
+                --name "$CONTAINER_APP_NAME" \
+                --resource-group "$RESOURCE_GROUP" \
+                --revision "$deployed_revision" \
+                --query '{health:properties.healthState,runningState:properties.runningState,details:properties.runningStateDetails}' \
+                --output json >&2
+              exit 1
+            fi
+            sleep 10
+          done
 
       - name: Configure Hosted Agent access
         shell: bash
