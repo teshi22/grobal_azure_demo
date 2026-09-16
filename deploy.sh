@@ -5,7 +5,13 @@ RESOURCE_GROUP="${RESOURCE_GROUP:-rg-travel-agent-hosted-demo}"
 LOCATION="${LOCATION:-japaneast}"
 AZURE_ENV_NAME="${AZURE_ENV_NAME:-travel-agent-local}"
 HOSTED_AGENT_NAME="${HOSTED_AGENT_NAME:-travel-request-agent}"
+SINGLE_PROMPT_AGENT_NAME="${SINGLE_PROMPT_AGENT_NAME:-travel-request-single-agent}"
+CLARIFIER_AGENT_NAME="${CLARIFIER_AGENT_NAME:-travel-request-clarifier}"
+PLANNER_AGENT_NAME="${PLANNER_AGENT_NAME:-travel-request-planner}"
+POLICY_AGENT_NAME="${POLICY_AGENT_NAME:-travel-request-policy-narrator}"
+APPROVAL_AGENT_NAME="${APPROVAL_AGENT_NAME:-travel-request-approval-writer}"
 MODEL_DEPLOYMENT_NAME="${MODEL_DEPLOYMENT_NAME:-gpt-5.4}"
+EVALUATION_JUDGE_MODEL="${EVALUATION_JUDGE_MODEL:-$MODEL_DEPLOYMENT_NAME}"
 MODEL_CAPACITY="${MODEL_CAPACITY:-20}"
 MCP_APP_DISPLAY_NAME="${MCP_APP_DISPLAY_NAME:-travel-mcp-functions}"
 WEB_APP_DISPLAY_NAME="${WEB_APP_DISPLAY_NAME:-travel-agent-web}"
@@ -85,8 +91,21 @@ require_command jq
 require_command python
 require_command zip
 
+DEPLOY_WORK_ROOT=".deploy-tmp"
+DEPLOY_WORK_DIR="${DEPLOY_WORK_ROOT}/run-$(date -u +%Y%m%d%H%M%S)-$$"
+DEPLOY_DIR="${DEPLOY_WORK_DIR}/mcp-deploy"
+DEPLOY_ZIP="${DEPLOY_WORK_DIR}/mcp-deploy.zip"
+PROMPT_AGENT_VERSIONS_FILE="${DEPLOY_WORK_DIR}/prompt-agent-versions.json"
+mkdir -p "$DEPLOY_DIR"
+cleanup() {
+  rm -rf "$DEPLOY_WORK_DIR"
+  rmdir "$DEPLOY_WORK_ROOT" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-$(az account show --query id --output tsv)}"
 az account set --subscription "$SUBSCRIPTION_ID"
+ENTRA_TENANT_ID=$(az account show --query tenantId --output tsv)
 
 echo "Creating or reusing Entra app registrations..."
 MCP_ENTRA_CLIENT_ID="${MCP_ENTRA_CLIENT_ID:-$(ensure_app_registration "$MCP_APP_DISPLAY_NAME")}"
@@ -119,6 +138,7 @@ DEPLOY_OUTPUT=$(az deployment group create \
 ACCOUNT_NAME=$(jq -r '.accountName.value' <<<"$DEPLOY_OUTPUT")
 PROJECT_NAME=$(jq -r '.projectName.value' <<<"$DEPLOY_OUTPUT")
 PROJECT_ENDPOINT=$(jq -r '.projectEndpoint.value' <<<"$DEPLOY_OUTPUT")
+PROJECT_RESOURCE_ID=$(jq -r '.projectResourceId.value' <<<"$DEPLOY_OUTPUT")
 APPINSIGHTS_CONNECTION_STRING=$(jq -r '.appInsightsConnectionString.value' <<<"$DEPLOY_OUTPUT")
 APP_INSIGHTS_RESOURCE_ID=$(jq -r '.appInsightsResourceId.value' <<<"$DEPLOY_OUTPUT")
 ACR_NAME=$(jq -r '.acrName.value' <<<"$DEPLOY_OUTPUT")
@@ -126,6 +146,9 @@ ACR_LOGIN_SERVER=$(jq -r '.acrLoginServer.value' <<<"$DEPLOY_OUTPUT")
 COSMOS_ENDPOINT=$(jq -r '.cosmosEndpoint.value' <<<"$DEPLOY_OUTPUT")
 COSMOS_ACCOUNT_NAME=$(jq -r '.cosmosAccountName.value' <<<"$DEPLOY_OUTPUT")
 COSMOS_DATABASE=$(jq -r '.cosmosDatabaseName.value' <<<"$DEPLOY_OUTPUT")
+COSMOS_EVALUATION_CASE_CONTAINER=$(jq -r '.cosmosEvaluationCaseContainerName.value' <<<"$DEPLOY_OUTPUT")
+COSMOS_EVALUATION_RUN_CONTAINER=$(jq -r '.cosmosEvaluationRunContainerName.value' <<<"$DEPLOY_OUTPUT")
+COSMOS_EVALUATION_RESULT_CONTAINER=$(jq -r '.cosmosEvaluationResultContainerName.value' <<<"$DEPLOY_OUTPUT")
 APP_NAME=$(jq -r '.appName.value' <<<"$DEPLOY_OUTPUT")
 APP_URL=$(jq -r '.appUrl.value' <<<"$DEPLOY_OUTPUT")
 MCP_TOOL_ENDPOINT=$(jq -r '.mcpEndpoint.value' <<<"$DEPLOY_OUTPUT")
@@ -158,9 +181,8 @@ ensure_role_assignment \
   "$deploy_principal_id" \
   "$deploy_principal_type" \
   "Foundry Project Manager" \
-  "$(jq -r '.projectResourceId.value' <<<"$DEPLOY_OUTPUT")"
+  "$PROJECT_RESOURCE_ID"
 
-echo "Packaging and deploying MCP Functions..."
 function_storage_id=$(az storage account show \
   --name "$FUNCTION_STORAGE_ACCOUNT" \
   --resource-group "$RESOURCE_GROUP" \
@@ -182,14 +204,44 @@ ensure_role_assignment \
   "AcrPush" \
   "$acr_id"
 
-DEPLOY_DIR=$(mktemp -d "${TMPDIR:-/tmp}/mcp-deploy.XXXXXX")
-DEPLOY_ZIP="${TMPDIR:-/tmp}/mcp-deploy.zip"
-cleanup() {
-  rm -rf "$DEPLOY_DIR"
-  rm -f "$DEPLOY_ZIP"
-}
-trap cleanup EXIT
+echo "Synchronizing versioned Prompt Agents..."
+python -m pip install \
+  --quiet \
+  "azure-ai-projects>=2.3.0,<2.4.0" \
+  "azure-identity>=1.19.0"
+for attempt in {1..12}; do
+  if python scripts/deploy-prompt-agents.py \
+    --project-endpoint "$PROJECT_ENDPOINT" \
+    --model "$MODEL_DEPLOYMENT_NAME" \
+    --output "$PROMPT_AGENT_VERSIONS_FILE" \
+    >/dev/null; then
+    break
+  fi
+  if [[ "$attempt" -eq 12 ]]; then
+    echo "Foundry RBAC did not become effective in time." >&2
+    exit 1
+  fi
+  sleep 10
+done
 
+resolve_prompt_agent_version() {
+  local agent_name="$1"
+  local version
+  version=$(jq -er --arg name "$agent_name" '.[$name]' "$PROMPT_AGENT_VERSIONS_FILE")
+  if [[ "$version" == "latest" ]]; then
+    echo "${agent_name} resolved to mutable version 'latest'." >&2
+    exit 1
+  fi
+  printf '%s' "$version"
+}
+
+CLARIFIER_AGENT_VERSION=$(resolve_prompt_agent_version "$CLARIFIER_AGENT_NAME")
+PLANNER_AGENT_VERSION=$(resolve_prompt_agent_version "$PLANNER_AGENT_NAME")
+POLICY_AGENT_VERSION=$(resolve_prompt_agent_version "$POLICY_AGENT_NAME")
+APPROVAL_AGENT_VERSION=$(resolve_prompt_agent_version "$APPROVAL_AGENT_NAME")
+SINGLE_PROMPT_AGENT_VERSION=$(resolve_prompt_agent_version "$SINGLE_PROMPT_AGENT_NAME")
+
+echo "Packaging and deploying MCP Functions..."
 cp mcp-tools/function_app.py mcp-tools/host.json "$DEPLOY_DIR/"
 cp -R mcp-tools/tools "$DEPLOY_DIR/"
 python -m pip install \
@@ -225,6 +277,67 @@ az functionapp restart \
   --resource-group "$RESOURCE_GROUP" \
   --output none
 
+echo "Deploying the Foundry Hosted Agent..."
+azd extension install azure.ai.projects
+azd extension install azure.ai.agents
+if ! azd auth login --check-status >/dev/null 2>&1; then
+  azd auth login
+fi
+if ! azd env select "$AZURE_ENV_NAME" --no-prompt >/dev/null 2>&1; then
+  azd env new "$AZURE_ENV_NAME" \
+    --subscription "$SUBSCRIPTION_ID" \
+    --location "$LOCATION" \
+    --no-prompt
+fi
+azd env set AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION_ID"
+azd env set AZURE_RESOURCE_GROUP "$RESOURCE_GROUP"
+azd env set AZURE_LOCATION "$LOCATION"
+azd env set AZURE_AI_PROJECT_NAME "$PROJECT_NAME"
+azd env set AZURE_AI_PROJECT_ID "$PROJECT_RESOURCE_ID"
+azd env set AZURE_AI_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
+azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_LOGIN_SERVER"
+azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$acr_id"
+azd env set FOUNDRY_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
+azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_DEPLOYMENT_NAME"
+azd env set CLARIFIER_AGENT_NAME "$CLARIFIER_AGENT_NAME"
+azd env set CLARIFIER_AGENT_VERSION "$CLARIFIER_AGENT_VERSION"
+azd env set PLANNER_AGENT_NAME "$PLANNER_AGENT_NAME"
+azd env set PLANNER_AGENT_VERSION "$PLANNER_AGENT_VERSION"
+azd env set POLICY_AGENT_NAME "$POLICY_AGENT_NAME"
+azd env set POLICY_AGENT_VERSION "$POLICY_AGENT_VERSION"
+azd env set APPROVAL_AGENT_NAME "$APPROVAL_AGENT_NAME"
+azd env set APPROVAL_AGENT_VERSION "$APPROVAL_AGENT_VERSION"
+azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
+azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
+azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
+azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"
+azd env set COSMOS_CHECKPOINT_CONTAINER "workflow-checkpoints"
+azd deploy "$HOSTED_AGENT_NAME" --no-prompt
+
+HOSTED_AGENT_VERSION=""
+hosted_agent_status=""
+for attempt in {1..30}; do
+  agent_json=$(azd ai agent show "$HOSTED_AGENT_NAME" \
+    --output json \
+    --no-prompt 2>/dev/null || true)
+  HOSTED_AGENT_VERSION=$(jq -r '.version // empty' <<<"$agent_json")
+  hosted_agent_status=$(jq -r '.status // empty' <<<"$agent_json")
+  if [[ -n "$HOSTED_AGENT_VERSION" && "$hosted_agent_status" == "active" ]]; then
+    break
+  fi
+  if [[ "$hosted_agent_status" == "failed" ]]; then
+    echo "Hosted Agent version ${HOSTED_AGENT_VERSION} failed to activate." >&2
+    exit 1
+  fi
+  sleep 10
+done
+if [[ -z "$HOSTED_AGENT_VERSION" \
+  || "$HOSTED_AGENT_VERSION" == "latest" \
+  || "$hosted_agent_status" != "active" ]]; then
+  echo "Could not resolve an immutable Hosted Agent version." >&2
+  exit 1
+fi
+
 echo "Building and deploying the authenticated BFF..."
 GIT_REVISION="$(git rev-parse --short HEAD 2>/dev/null || true)"
 if [[ -z "$GIT_REVISION" ]]; then
@@ -252,41 +365,23 @@ az containerapp update \
   --name "$APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
   --image "${ACR_LOGIN_SERVER}/${IMAGE_TAG}" \
+  --set-env-vars \
+    "AZURE_AI_MODEL_DEPLOYMENT_NAME=$MODEL_DEPLOYMENT_NAME" \
+    "HOSTED_AGENT_NAME=$HOSTED_AGENT_NAME" \
+    "HOSTED_AGENT_VERSION=$HOSTED_AGENT_VERSION" \
+    "SINGLE_PROMPT_AGENT_NAME=$SINGLE_PROMPT_AGENT_NAME" \
+    "SINGLE_PROMPT_AGENT_VERSION=$SINGLE_PROMPT_AGENT_VERSION" \
+    "EVALUATION_JUDGE_MODEL=$EVALUATION_JUDGE_MODEL" \
+    "ENTRA_TENANT_ID=$ENTRA_TENANT_ID" \
+    "COSMOS_EVALUATION_CASE_CONTAINER=$COSMOS_EVALUATION_CASE_CONTAINER" \
+    "COSMOS_EVALUATION_RUN_CONTAINER=$COSMOS_EVALUATION_RUN_CONTAINER" \
+    "COSMOS_EVALUATION_RESULT_CONTAINER=$COSMOS_EVALUATION_RESULT_CONTAINER" \
   --output none
-
-echo "Deploying the Foundry Hosted Agent..."
-azd extension install azure.ai.projects
-azd extension install azure.ai.agents
-if ! azd auth login --check-status >/dev/null 2>&1; then
-  azd auth login
-fi
-if ! azd env select "$AZURE_ENV_NAME" --no-prompt >/dev/null 2>&1; then
-  azd env new "$AZURE_ENV_NAME" \
-    --subscription "$SUBSCRIPTION_ID" \
-    --location "$LOCATION" \
-    --no-prompt
-fi
-azd env set AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION_ID"
-azd env set AZURE_RESOURCE_GROUP "$RESOURCE_GROUP"
-azd env set AZURE_LOCATION "$LOCATION"
-azd env set AZURE_AI_PROJECT_NAME "$PROJECT_NAME"
-azd env set AZURE_AI_PROJECT_ID "$(jq -r '.projectResourceId.value' <<<"$DEPLOY_OUTPUT")"
-azd env set AZURE_AI_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
-azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_LOGIN_SERVER"
-azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$acr_id"
-azd env set FOUNDRY_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
-azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_DEPLOYMENT_NAME"
-azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
-azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
-azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
-azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"
-azd env set COSMOS_CHECKPOINT_CONTAINER "workflow-checkpoints"
-azd deploy "$HOSTED_AGENT_NAME" --no-prompt
 
 AZURE_SUBSCRIPTION_ID="$SUBSCRIPTION_ID" \
 AZURE_AI_PROJECT_ENDPOINT="$PROJECT_ENDPOINT" \
 FOUNDRY_ACCOUNT_RESOURCE_ID="$ai_account_id" \
-FOUNDRY_PROJECT_RESOURCE_ID="$(jq -r '.projectResourceId.value' <<<"$DEPLOY_OUTPUT")" \
+FOUNDRY_PROJECT_RESOURCE_ID="$PROJECT_RESOURCE_ID" \
 APP_INSIGHTS_RESOURCE_ID="$APP_INSIGHTS_RESOURCE_ID" \
 RESOURCE_GROUP="$RESOURCE_GROUP" \
 FOUNDRY_ACCOUNT_NAME="$ACCOUNT_NAME" \
@@ -295,24 +390,40 @@ COSMOS_ACCOUNT_NAME="$COSMOS_ACCOUNT_NAME" \
 CONTAINER_APP_NAME="$APP_NAME" \
 FUNCTION_APP_NAME="$FUNCTION_APP_NAME" \
 HOSTED_AGENT_NAME="$HOSTED_AGENT_NAME" \
+HOSTED_AGENT_VERSION="$HOSTED_AGENT_VERSION" \
   bash scripts/configure-hosted-agent.sh
 
 printf '%s\n' \
   "AZURE_AI_PROJECT_ENDPOINT=${PROJECT_ENDPOINT}" \
   "AZURE_AI_MODEL_DEPLOYMENT_NAME=${MODEL_DEPLOYMENT_NAME}" \
   "HOSTED_AGENT_NAME=${HOSTED_AGENT_NAME}" \
+  "HOSTED_AGENT_VERSION=${HOSTED_AGENT_VERSION}" \
+  "SINGLE_PROMPT_AGENT_NAME=${SINGLE_PROMPT_AGENT_NAME}" \
+  "SINGLE_PROMPT_AGENT_VERSION=${SINGLE_PROMPT_AGENT_VERSION}" \
+  "EVALUATION_JUDGE_MODEL=${EVALUATION_JUDGE_MODEL}" \
   "COSMOS_ENDPOINT=${COSMOS_ENDPOINT}" \
   "COSMOS_DATABASE=${COSMOS_DATABASE}" \
+  "COSMOS_EVALUATION_CASE_CONTAINER=${COSMOS_EVALUATION_CASE_CONTAINER}" \
+  "COSMOS_EVALUATION_RUN_CONTAINER=${COSMOS_EVALUATION_RUN_CONTAINER}" \
+  "COSMOS_EVALUATION_RESULT_CONTAINER=${COSMOS_EVALUATION_RESULT_CONTAINER}" \
   "APPLICATIONINSIGHTS_CONNECTION_STRING=${APPINSIGHTS_CONNECTION_STRING}" \
   "MCP_TOOL_ENDPOINT=${MCP_TOOL_ENDPOINT}" \
   "MCP_FUNCTION_APP_CLIENT_ID=${MCP_ENTRA_CLIENT_ID}" \
-  "AZURE_TENANT_ID=$(az account show --query tenantId --output tsv)" \
+  "ENTRA_TENANT_ID=${ENTRA_TENANT_ID}" \
   "ENTRA_CLIENT_ID=${WEB_ENTRA_CLIENT_ID}" \
   > .env
 cp .env app/backend/.env
 printf '%s\n' \
   "FOUNDRY_PROJECT_ENDPOINT=${PROJECT_ENDPOINT}" \
   "AZURE_AI_MODEL_DEPLOYMENT_NAME=${MODEL_DEPLOYMENT_NAME}" \
+  "CLARIFIER_AGENT_NAME=${CLARIFIER_AGENT_NAME}" \
+  "CLARIFIER_AGENT_VERSION=${CLARIFIER_AGENT_VERSION}" \
+  "PLANNER_AGENT_NAME=${PLANNER_AGENT_NAME}" \
+  "PLANNER_AGENT_VERSION=${PLANNER_AGENT_VERSION}" \
+  "POLICY_AGENT_NAME=${POLICY_AGENT_NAME}" \
+  "POLICY_AGENT_VERSION=${POLICY_AGENT_VERSION}" \
+  "APPROVAL_AGENT_NAME=${APPROVAL_AGENT_NAME}" \
+  "APPROVAL_AGENT_VERSION=${APPROVAL_AGENT_VERSION}" \
   "COSMOS_ENDPOINT=${COSMOS_ENDPOINT}" \
   "COSMOS_DATABASE_NAME=${COSMOS_DATABASE}" \
   "COSMOS_CHECKPOINT_CONTAINER=workflow-checkpoints" \
@@ -322,7 +433,94 @@ printf '%s\n' \
 
 echo "Running smoke tests..."
 curl --fail --silent --show-error --retry 12 --retry-delay 10 "${APP_URL}/health"
-python -m pip install --quiet azure-ai-projects azure-identity
+
+if [[ -f app/backend/app/routers/evaluations.py ]]; then
+  access_token=$(az account get-access-token \
+    --resource "$WEB_ENTRA_CLIENT_ID" \
+    --query accessToken \
+    --output tsv)
+  seed_response="${DEPLOY_WORK_DIR}/evaluation-seed-response.json"
+  curl --fail --silent --show-error \
+    --request POST \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "Content-Type: application/json" \
+    --data '{"seed_default":true,"overwrite":false}' \
+    "$APP_URL/api/evaluations/cases/import" \
+    --output "$seed_response"
+
+  run_response="${DEPLOY_WORK_DIR}/evaluation-smoke-run.json"
+  curl --fail --silent --show-error \
+    --request POST \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "Content-Type: application/json" \
+    --data "{
+      \"name\": \"local-deployment-smoke-$(date -u +%Y%m%d%H%M%S)\",
+      \"dataset_id\": \"travel-request-v1\",
+      \"case_ids\": [
+        \"case-standard-tokyo-osaka\",
+        \"case-standard-osaka-fukuoka\"
+      ]
+    }" \
+    "$APP_URL/api/evaluations/runs" \
+    --output "$run_response"
+  run_id=$(jq -er '.id' "$run_response")
+
+  run_status=""
+  for attempt in {1..120}; do
+    curl --fail --silent --show-error \
+      --header "Authorization: Bearer ${access_token}" \
+      "$APP_URL/api/evaluations/runs/${run_id}" \
+      --output "$run_response"
+    run_status=$(jq -r '.status // empty' "$run_response")
+    if jq -e '
+      [.scenario_runs[]?.status // empty]
+      | any(. == "failed" or . == "canceled")
+    ' "$run_response" >/dev/null; then
+      jq '{id, status, error, scenario_runs}' "$run_response" >&2
+      exit 1
+    fi
+    case "$run_status" in
+      completed)
+        break
+        ;;
+      failed|error|cancelled|canceled|partial_failure|partially_completed)
+        jq '{id, status, error, scenario_runs}' "$run_response" >&2
+        exit 1
+        ;;
+    esac
+    if [[ "$attempt" -eq 120 ]]; then
+      echo "Paired evaluation smoke test timed out." >&2
+      exit 1
+    fi
+    sleep 15
+  done
+
+  jq -e \
+    --arg hosted_version "$HOSTED_AGENT_VERSION" \
+    --arg single_version "$SINGLE_PROMPT_AGENT_VERSION" \
+    '.scenario_runs.agent_framework_workflow.agent_version == $hosted_version
+     and .scenario_runs.single_prompt_agent.agent_version == $single_version' \
+    "$run_response" >/dev/null
+
+  results_response="${DEPLOY_WORK_DIR}/evaluation-smoke-results.json"
+  curl --fail --silent --show-error \
+    --header "Authorization: Bearer ${access_token}" \
+    "$APP_URL/api/evaluations/runs/${run_id}/results" \
+    --output "$results_response"
+  jq -e '
+    type == "array"
+    and length == 2
+    and all(.[];
+      .scenarios.agent_framework_workflow != null
+      and .scenarios.single_prompt_agent != null
+      and ((.scenarios.agent_framework_workflow.error // "") == "")
+      and ((.scenarios.single_prompt_agent.error // "") == "")
+    )
+  ' "$results_response" >/dev/null
+else
+  echo "Evaluation backend contract not present; skipping paired evaluation smoke."
+fi
+
 python scripts/smoke-hosted-agent.py \
   --project-endpoint "$PROJECT_ENDPOINT" \
   --agent-name "$HOSTED_AGENT_NAME"

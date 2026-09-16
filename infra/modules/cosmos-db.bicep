@@ -161,7 +161,58 @@ resource travelRequestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
   }
 }
 
+// コンテナ: evaluation-cases
+resource evaluationCaseContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: database
+  name: 'evaluation-cases'
+  properties: {
+    resource: {
+      id: 'evaluation-cases'
+      partitionKey: {
+        paths: ['/dataset_id']
+        kind: 'Hash'
+        version: 2
+      }
+    }
+  }
+}
+
+// コンテナ: evaluation-runs
+resource evaluationRunContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: database
+  name: 'evaluation-runs'
+  properties: {
+    resource: {
+      id: 'evaluation-runs'
+      partitionKey: {
+        paths: ['/id']
+        kind: 'Hash'
+        version: 2
+      }
+    }
+  }
+}
+
+// コンテナ: evaluation-results
+resource evaluationResultContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: database
+  name: 'evaluation-results'
+  properties: {
+    resource: {
+      id: 'evaluation-results'
+      partitionKey: {
+        paths: ['/comparison_id']
+        kind: 'Hash'
+        version: 2
+      }
+    }
+  }
+}
+
 output accountEndpoint string = cosmosAccount.properties.documentEndpoint
 output accountName string = cosmosAccount.name
 output accountId string = cosmosAccount.id
 output databaseName string = database.name
+output evaluationCaseContainerName string = evaluationCaseContainer.name
+output evaluationRunContainerName string = evaluationRunContainer.name
+output evaluationResultContainerName string = evaluationResultContainer.name

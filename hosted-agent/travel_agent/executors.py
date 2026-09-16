@@ -12,6 +12,7 @@ from agent_framework import Executor, Message, handler, response_handler
 
 from .agents import TravelAgents
 from .date_resolver import resolve_schedule
+from .evaluation import EvaluationMode
 from .mcp_client import submit_travel_request
 from .models import (
     ApprovalDocument,
@@ -53,13 +54,29 @@ def _extract_json(text: str) -> dict[str, Any]:
     return value
 
 
-class MessageToTextStep(Executor):
-    def __init__(self) -> None:
-        super().__init__(id="message_to_text")
+def _response_text(response: Any, agent_name: str) -> str:
+    text = getattr(response, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"{agent_name} returned an empty text response")
+    return text
 
-    @handler(input=list[Message], output=str)
+
+class MessageToTextStep(Executor):
+    def __init__(self, evaluation: EvaluationMode) -> None:
+        super().__init__(id="message_to_text")
+        self._evaluation = evaluation
+
+    @handler(input=list[Message], output=str, workflow_output=str)
     async def run(self, messages, ctx) -> None:
         text = " ".join(message.text or "" for message in messages).strip()
+        evaluation = self._evaluation.begin(text, ctx)
+        if evaluation.output_json:
+            await ctx.yield_output(evaluation.output_json)
+            return
+        if self._evaluation.is_active(ctx):
+            await ctx.send_message(evaluation.input_text)
+            return
+
         try:
             envelope = json.loads(text)
         except json.JSONDecodeError:
@@ -78,7 +95,9 @@ class RequestClarifierStep(Executor):
     @handler(input=str, output=ClarificationResult)
     async def run(self, user_input, ctx) -> None:
         response = await self._agent.run(user_input)
-        extracted = ExtractedRequest.model_validate(_extract_json(response.text))
+        extracted = ExtractedRequest.model_validate(
+            _extract_json(_response_text(response, "request clarifier"))
+        )
         previous = ctx.get_state("request_fields") or {}
         fields = {
             key: getattr(extracted, key) or previous.get(key, "")
@@ -116,11 +135,17 @@ class RequestClarifierStep(Executor):
 
 
 class ClarificationStep(Executor):
-    def __init__(self) -> None:
+    def __init__(self, evaluation: EvaluationMode) -> None:
         super().__init__(id="clarification")
+        self._evaluation = evaluation
 
-    @handler(input=ClarificationResult, output=str)
+    @handler(input=ClarificationResult, output=str, workflow_output=str)
     async def request(self, result, ctx) -> None:
+        if self._evaluation.is_active(ctx):
+            await ctx.yield_output(
+                self._evaluation.needs_clarification(ctx, result)
+            )
+            return
         await ctx.request_info(
             request_data=ClarificationRequest(
                 question=result.question,
@@ -149,11 +174,18 @@ class ClarificationStep(Executor):
 
 
 class RequestConfirmationStep(Executor):
-    def __init__(self) -> None:
+    def __init__(self, evaluation: EvaluationMode) -> None:
         super().__init__(id="request_confirmation")
+        self._evaluation = evaluation
 
     @handler(input=ClarificationResult, output=str)
     async def request(self, result, ctx) -> None:
+        if self._evaluation.is_active(ctx):
+            await ctx.send_message(
+                result.enriched_request,
+                target_id="travel_planner",
+            )
+            return
         await ctx.request_info(
             request_data=RequestConfirmationRequest(
                 enriched_request=result.enriched_request,
@@ -224,15 +256,21 @@ class TravelPlannerStep(Executor):
             return value
         if value is not None:
             return TravelPlan.model_validate(value)
-        return TravelPlan.model_validate(_extract_json(response.text))
+        return TravelPlan.model_validate(
+            _extract_json(_response_text(response, "travel planner"))
+        )
 
 
 class PlanReviewStep(Executor):
-    def __init__(self) -> None:
+    def __init__(self, evaluation: EvaluationMode) -> None:
         super().__init__(id="plan_review")
+        self._evaluation = evaluation
 
     @handler(input=str, output=str)
     async def request(self, plan_json, ctx) -> None:
+        if self._evaluation.is_active(ctx):
+            await ctx.send_message(plan_json, target_id="policy_check")
+            return
         await ctx.request_info(
             request_data=PlanReviewRequest(plan_json=plan_json),
             response_type=str,
@@ -286,7 +324,10 @@ class PolicyCheckStep(Executor):
             PolicyOutcome(
                 compliant=bool(result["compliant"]),
                 details=list(result["details"]),
-                narrative=narrative_response.text,
+                narrative=_response_text(
+                    narrative_response,
+                    "policy narrator",
+                ),
                 plan_json=plan_json,
             )
         )
@@ -308,24 +349,40 @@ class PolicyReplanStep(Executor):
 
 
 class ApprovalDocumentStep(Executor):
-    def __init__(self, agents: TravelAgents) -> None:
+    def __init__(
+        self,
+        agents: TravelAgents,
+        evaluation: EvaluationMode,
+    ) -> None:
         super().__init__(id="approval_document")
         self._agent = agents.approval
+        self._evaluation = evaluation
 
-    @handler(input=PolicyOutcome, output=ApprovalDocument)
+    @handler(
+        input=PolicyOutcome,
+        output=ApprovalDocument,
+        workflow_output=str,
+    )
     async def run(self, outcome, ctx) -> None:
         response = await self._agent.run(
             f"旅程JSON:\n{outcome.plan_json}\n\n規程チェック:\n{outcome.narrative}"
         )
         plan_hash = hashlib.sha256(outcome.plan_json.encode("utf-8")).hexdigest()
-        await ctx.send_message(
-            ApprovalDocument(
-                application_text=response.text,
-                plan_json=outcome.plan_json,
-                policy_narrative=outcome.narrative,
-                plan_hash=plan_hash,
-            )
+        document = ApprovalDocument(
+            application_text=_response_text(
+                response,
+                "approval writer",
+            ),
+            plan_json=outcome.plan_json,
+            policy_narrative=outcome.narrative,
+            plan_hash=plan_hash,
         )
+        if self._evaluation.is_active(ctx):
+            await ctx.yield_output(
+                self._evaluation.draft_ready(ctx, document, outcome)
+            )
+            return
+        await ctx.send_message(document)
 
 
 class SubmissionConfirmationStep(Executor):

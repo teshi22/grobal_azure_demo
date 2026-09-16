@@ -1,12 +1,12 @@
-# 出張申請マルチエージェント
+# 出張申請エージェント比較アプリ
 
-自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進める Web アプリケーションです。
+自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進めるWebアプリケーションです。通常の対話画面に加え、Agent Frameworkワークフローと単一Prompt Agentを同じテストケースで比較する評価画面を備えています。
 
-エージェント処理は **Microsoft Agent Framework で定義した1つのワークフロー**として Microsoft Foundry Hosted Agent 上で実行します。Azure Container Apps 上の FastAPI は、認証、会話所有権、HITL（Human-in-the-Loop）、SSE 配信を受け持つ BFF です。
+通常のエージェント処理は、**Microsoft Agent Frameworkで定義した1つのワークフロー**としてMicrosoft Foundry Hosted Agent上で実行します。依頼整理、旅程作成、規程説明、申請案作成は、versionを固定した4つのFoundry Prompt Agentが担当します。Azure Container Apps上のFastAPIは、認証、会話所有権、HITL（Human-in-the-Loop）、SSE配信、Foundryバッチ評価を受け持つBFFです。
 
 初めて触る場合は「構成」「処理の流れ」「Azure へデプロイする」まで読んでください。環境変数、テスト、運用上の注意は必要なときに参照できます。
 
-## 4つの専門エージェントを1つの Hosted Agent で動かす
+## 4つのPrompt AgentをHosted Agentのワークフローから呼ぶ
 
 ```mermaid
 flowchart LR
@@ -25,6 +25,8 @@ flowchart LR
             Policy["Policy Checker"]
             Writer["Approval Writer"]
         end
+        Single["Single Prompt Agent<br/>比較シナリオ"]
+        Evaluation["Foundry Evaluation<br/>同一Dataset・同一rubric"]
         Model["GPT model deployment"]
     end
 
@@ -32,15 +34,19 @@ flowchart LR
         MCP["MCP<br/>submit_travel_request"]
     end
 
-    Cosmos[("Azure Cosmos DB<br/>会話・HITL・イベント<br/>チェックポイント・申請")]
+    Cosmos[("Azure Cosmos DB<br/>会話・HITL・イベント<br/>申請・評価結果")]
     Insights["Application Insights"]
 
     User --> Web
     Web -->|"REST / SSE"| BFF
     BFF -->|"Responses API"| Host
     Host --> AF
-    Clarifier & Planner & Policy & Writer --> Model
-    Planner -->|"GA Web Search"| Model
+    Clarifier & Planner & Policy & Writer -->|"Prompt Agent"| Model
+    Planner -->|"Web Search"| Model
+    BFF --> Evaluation
+    Evaluation --> Host
+    Evaluation --> Single
+    Single -->|"Web Search"| Model
     Writer --> MCP
     BFF --> Cosmos
     Host --> Cosmos
@@ -50,11 +56,12 @@ flowchart LR
 
 | コンポーネント | 実装 | 主な責務 |
 |---|---|---|
-| Frontend | Next.js 15、React 19 | チャット、確認画面、申請一覧 |
-| BFF | FastAPI | Entra ID 認証、会話所有権、Hosted Agent 呼び出し、durable SSE |
-| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4エージェントのオーケストレーションと HITL |
+| Frontend | Next.js 15、React 19 | チャット、確認画面、申請一覧、比較評価 |
+| BFF | FastAPI | Entra ID認証、会話所有権、Hosted Agent呼び出し、durable SSE、Datasetと評価runの管理 |
+| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4つのPrompt AgentのオーケストレーションとHITL |
+| Prompt Agents | Foundry Agent Service | 専門処理4種と単一エージェント比較シナリオ |
 | MCP | Azure Functions | 承認済み申請の冪等な登録 |
-| Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認 grant、申請 |
+| Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認grant、申請、評価ケースと結果 |
 | Observability | OpenTelemetry、Application Insights | BFF と Hosted Agent のトレース |
 | Infrastructure | Bicep、Azure Developer CLI | Japan East への一括デプロイと RBAC 設定 |
 
@@ -64,7 +71,29 @@ Hosted Agent 内の名前はチェックポイントとの互換性に関わる�
 |---|---|
 | Hosted Agent | `travel-request-agent` |
 | Workflow | `travel-request-workflow` |
-| Agents | `request-clarifier`、`travel-planner`、`policy-checker`、`approval-document-writer` |
+| Prompt Agents | `travel-request-clarifier`、`travel-request-planner`、`travel-request-policy-narrator`、`travel-request-approval-writer` |
+| Single Prompt Agent | `travel-request-single-agent` |
+
+Prompt Agentは名前だけでなくversionも設定に保存します。プロンプトやツール定義を変更した場合は新しいversionを作り、Hosted Agentと評価runへ同じversionを渡します。
+
+## 同じ20ケースで2つの構成を比較する
+
+`/evaluations`では次の2シナリオを比較します。
+
+| シナリオ | 構成 |
+|---|---|
+| Agent Framework workflow | Hosted Agentが処理順と状態を管理し、4つのPrompt Agentと決定論的な規程判定を組み合わせる |
+| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web検索、規程判断、申請案作成までを処理する |
+
+初期ケースは`evaluation-data/travel-request-cases.jsonl`に20件あります。標準的な国内出張、情報不足、規程の境界条件、複雑な経路、相対日付を含みます。画面から追加・編集・複製でき、JSONLも取り込めます。
+
+自動評価はMicrosoft Foundryのバッチ評価を土台にします。旅行申請用rubricを60%、JSON Schema、必須項目、日付、規程、運賃根拠、金額合計の決定論的検証を40%として総合精度を算出します。Foundryの補助指標は総合点に混ぜず、原因分析用に別表示します。
+
+比較画面では総合精度に加え、バッチ所要時間、モデル別トークン量、推定コストを確認できます。推定コストは`app/backend/config/model-pricing.json`の単価を使い、更新日も表示します。単価がないモデルは0円にせず、算出不可として扱います。
+
+人手評価はケースごとに両シナリオを1〜5点で採点し、勝者または引き分けとコメントを保存します。自動評価と人手評価は別に集計するため、rubricでは高得点でも人が読みにくいケースなどを確認できます。
+
+評価モードは申請案の生成で停止します。依頼確認と旅程レビューは自動通過しますが、情報不足は推測せず確認事項を返します。MCP、approval grant、`travel-requests`への書き込みは実行しません。
 
 ## 申請は4回の確認を挟み、安全に再開できる
 
@@ -119,16 +148,20 @@ MCP は grant の状態、有効期限、会話 ID、旅程ハッシュを再検
 │   └── backend/
 │       ├── app/
 │       │   ├── auth/entra.py           # Easy Auth / Bearer JWT 検証
-│       │   ├── routers/                # conversations、stream、travel_requests
-│       │   └── services/               # Hosted Agent、Foundry、Cosmos
+│       │   ├── routers/                # conversations、stream、travel_requests、evaluations
+│       │   └── services/               # Hosted Agent、Foundry評価、採点、Cosmos
+│       ├── config/                     # rubric とモデル単価
 │       └── tests/
+├── prompt-agents/                      # 5つのPrompt Agent定義
+├── evaluation-data/
+│   └── travel-request-cases.jsonl      # 初期20ケース
 ├── hosted-agent/
 │   ├── main.py                         # ResponsesHostServer エントリーポイント
 │   ├── Dockerfile                      # Hosted Agent、port 8088
 │   ├── travel_agent/
-│   │   ├── agents.py                   # 4エージェント
+│   │   ├── agents.py                   # version固定Prompt Agent接続
 │   │   ├── workflow.py                 # Agent Framework グラフ
-│   │   ├── executors.py                # HITL、規程判定、MCP 実行
+│   │   ├── executors.py                # HITL、評価モード、規程判定、MCP実行
 │   │   └── checkpoints.py              # Cosmos チェックポイント
 │   └── tests/
 ├── mcp-tools/
@@ -139,6 +172,8 @@ MCP は grant の状態、有効期限、会話 ID、旅程ハッシュを再検
 │   ├── main.bicep
 │   └── modules/
 ├── scripts/
+│   ├── deploy-prompt-agents.py         # Prompt Agentの同期
+│   ├── validate-evaluation-data.py     # 初期JSONLの検証
 │   ├── configure-hosted-agent.sh       # Hosted Agent MI の RBAC と Easy Auth
 │   └── smoke-hosted-agent.py
 ├── azure.yaml                          # Foundry Hosted Agent デプロイ定義
@@ -174,10 +209,11 @@ bash deploy.sh
 
 1. BFF と MCP 用の Entra ID アプリ登録を作成または再利用する
 2. Bicep で Foundry、Cosmos DB、Functions、Container Apps を構築する
-3. MCP Functions と BFF コンテナーをデプロイする
-4. `azd` で Hosted Agent をデプロイする
-5. Hosted Agent の Managed Identity に Foundry、Cosmos DB、MCP の権限を設定する
-6. BFF の health check と Hosted Agent の `request_info` を確認する
+3. 5つのPrompt Agent定義を同期し、確定したversionを保存する
+4. MCP Functions、Hosted Agent、BFFを固定versionでデプロイする
+5. BFF、Foundryプロジェクト、Hosted AgentのManaged Identityへ必要な権限を設定する
+6. 初期20ケースを登録する
+7. BFFのhealth check、Hosted Agentの`request_info`、2ケースの比較評価を確認する
 
 必要に応じて環境変数でデプロイ先を上書きできます。
 
@@ -250,10 +286,19 @@ python main.py
 
 Hosted Agent のローカル起動ではインメモリチェックポイントを使います。Foundry 上では `COSMOS_ENDPOINT` が設定されるため、Cosmos DB の永続チェックポイントに切り替わります。
 
+Azureへ接続せず比較画面を確認する場合は、BFFの明示的な評価スタブ設定を有効にします。スタブはローカル専用で、本番では自動的に有効になりません。実際の評価ではPrompt Agentのversion、Dataset version、judge modelが必要です。
+
+初期JSONLは次のコマンドで検証できます。
+
+```bash
+python scripts/validate-evaluation-data.py
+```
+
 ## 変更前に3つのテスト群とFrontendを確認する
 
 ```bash
 python -m pytest hosted-agent/tests app/backend/tests mcp-tools/tests
+python scripts/validate-evaluation-data.py
 
 cd app/frontend
 npm ci
@@ -281,21 +326,24 @@ python scripts/smoke-hosted-agent.py \
 | `conversations` | `/id` | 所有者、Responses ID、pending HITL |
 | `approval-grants` | `/id` | 送信承認の短命 grant |
 | `travel-requests` | `/request_id` | 冪等に登録した申請 |
+| `evaluation-cases` | `/dataset_id` | 評価入力、期待値、タグ、版 |
+| `evaluation-runs` | `/id` | Datasetと2つのFoundry run、Agent version、集計 |
+| `evaluation-results` | `/comparison_id` | ケース単位の両出力、自動評価、人手評価 |
 
 `workflow-checkpoints` は30日で削除します。`approval-grants` はコンテナー側で TTL を有効にし、各アイテムには発行時の短い TTL を設定します。
 
 ## 運用で見る場所を分ける
 
 - **Application Insights**: Foundry Hosted Agent のサーバー側トレースと、BFF / Functions の警告・エラー
-- **Foundry**: Hosted Agent のデプロイ状態、Responses 実行、トレース、モデル利用状況
-- **Cosmos DB**: pending HITL、イベント再生、grant の消費状態、申請の重複有無
+- **Foundry**: Prompt AgentとHosted Agentのversion、Dataset、Evaluation run、トレース、モデル利用状況
+- **Cosmos DB**: pending HITL、イベント再生、grantの消費状態、申請の重複有無、比較結果
 - **Container Apps / Functions**: Easy Auth、Managed Identity、revision と実行ログ
 
 Foundry プロジェクトは Project Managed Identity を使って Application Insights に接続します。プロジェクトの Managed Identity にはトレースの送信・参照に必要なロールを割り当てます。Hosted Agentの再デプロイ後はホスティング基盤がGenAIトレースを自動送信します。プロンプト本文の記録、OpenTelemetryのログ、メトリクス、SDK統計は有効化せず、取り込み量を抑えます。
 
 Foundryでは、HITLの確認・修正・承認を応答ターンごとのトレースとして記録します。BFFは同じ会話IDを`agent_session_id`として引き継ぐため、Foundryの「セッションビュー」から1回の申請に含まれるトレースをまとめて確認できます。
 
-`scripts/configure-hosted-agent.sh` は Hosted Agent のデプロイ後に実行します。Agent には Application Insights の `Monitoring Metrics Publisher`、Cosmos DB Built-in Data Contributor、Functions Easy Auth の `allowedApplications` を設定します。BFF には `Foundry Agent Consumer` と、`x-ms-user-identity` に必要な最小権限のカスタムロールを割り当てます。
+`scripts/configure-hosted-agent.sh`はHosted Agentのデプロイ後に実行します。AgentにはApplication Insightsの`Monitoring Metrics Publisher`、Cosmos DB Built-in Data Contributor、Foundry Agent Consumer、Functions Easy Authの`allowedApplications`を設定します。BFFとFoundryプロジェクトのManaged Identityには、Datasetとバッチ評価を実行するためのFoundryロールを割り当てます。
 
 ## 用語
 
@@ -303,8 +351,10 @@ Foundryでは、HITLの確認・修正・承認を応答ターンごとのトレ
 |---|---|
 | BFF | Browser からの API 呼び出しを受け、認証とバックエンド連携を集約する FastAPI |
 | Hosted Agent | Foundry がコンテナーを管理し、Responses API として公開する Agent Framework アプリ |
+| Prompt Agent | モデル、instructions、toolsをFoundry側のversionとして管理するエージェント |
 | HITL | 依頼内容、旅程、送信を利用者が確認してから処理を再開する仕組み |
 | approval grant | BFF が送信承認時だけ発行し、MCP が副作用の直前に検証する短命な許可情報 |
 | durable SSE | イベントをメモリではなく Cosmos DB に保存し、切断後も `Last-Event-ID` から再送する方式 |
+| comparison run | 同じDatasetと評価基準で、2つのエージェント構成を対にして実行した評価単位 |
 
 実装上の問題や改善案は、このリポジトリの GitHub Issues に登録してください。

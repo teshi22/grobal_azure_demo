@@ -20,6 +20,18 @@ param logAnalyticsSharedKey string = ''
 @description('Cosmos DB エンドポイント')
 param cosmosEndpoint string = ''
 
+@description('Cosmos DB データベース名')
+param cosmosDatabaseName string = 'travel-agent'
+
+@description('評価ケース Cosmos DB コンテナ名')
+param evaluationCaseContainerName string = 'evaluation-cases'
+
+@description('評価実行 Cosmos DB コンテナ名')
+param evaluationRunContainerName string = 'evaluation-runs'
+
+@description('評価結果 Cosmos DB コンテナ名')
+param evaluationResultContainerName string = 'evaluation-results'
+
 @description('AI Project エンドポイント')
 param aiProjectEndpoint string = ''
 
@@ -28,6 +40,18 @@ param appInsightsConnectionString string = ''
 
 @description('Foundry Hosted Agent 名')
 param hostedAgentName string = 'travel-request-agent'
+
+@description('Foundry Hosted Agent バージョン')
+param hostedAgentVersion string = ''
+
+@description('単一 Prompt Agent 名')
+param singlePromptAgentName string = 'travel-request-single-agent'
+
+@description('単一 Prompt Agent バージョン')
+param singlePromptAgentVersion string = ''
+
+@description('評価 Judge モデル名')
+param evaluationJudgeModel string
 
 @description('Web/BFF 用 Entra ID アプリ登録のクライアント ID')
 param webEntraClientId string = ''
@@ -78,7 +102,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'app'
-          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld@sha256:7ab9698944af677cf77ae67d0a5c54595609e93adeb42babc154b9380a565539'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -86,9 +110,17 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           env: [
             { name: 'AZURE_AI_PROJECT_ENDPOINT', value: aiProjectEndpoint }
             { name: 'COSMOS_ENDPOINT', value: cosmosEndpoint }
+            { name: 'COSMOS_DATABASE', value: cosmosDatabaseName }
+            { name: 'COSMOS_EVALUATION_CASE_CONTAINER', value: evaluationCaseContainerName }
+            { name: 'COSMOS_EVALUATION_RUN_CONTAINER', value: evaluationRunContainerName }
+            { name: 'COSMOS_EVALUATION_RESULT_CONTAINER', value: evaluationResultContainerName }
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
             { name: 'HOSTED_AGENT_NAME', value: hostedAgentName }
-            { name: 'AZURE_TENANT_ID', value: entraTenantId }
+            { name: 'HOSTED_AGENT_VERSION', value: hostedAgentVersion }
+            { name: 'SINGLE_PROMPT_AGENT_NAME', value: singlePromptAgentName }
+            { name: 'SINGLE_PROMPT_AGENT_VERSION', value: singlePromptAgentVersion }
+            { name: 'EVALUATION_JUDGE_MODEL', value: evaluationJudgeModel }
+            { name: 'ENTRA_TENANT_ID', value: entraTenantId }
             { name: 'ENTRA_CLIENT_ID', value: webEntraClientId }
             { name: 'ENABLE_DOCS', value: 'false' }
           ]

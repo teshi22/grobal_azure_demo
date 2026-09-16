@@ -2,7 +2,6 @@
 
 import logging
 
-from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
 from azure.ai.agentserver.responses import ResponsesServerOptions
 from azure.identity import DefaultAzureCredential
@@ -26,12 +25,13 @@ logging.getLogger("opentelemetry").setLevel(logging.WARNING)
 
 
 def create_server() -> ResponsesHostServer:
-    client = FoundryChatClient(
+    credential = DefaultAzureCredential()
+    agents = create_agents(
         project_endpoint=settings.foundry_project_endpoint,
-        model=settings.azure_ai_model_deployment_name,
-        credential=DefaultAzureCredential(),
+        credential=credential,
+        config=settings,
     )
-    workflow_agent = build_workflow(create_agents(client)).as_agent(
+    workflow_agent = build_workflow(agents).as_agent(
         name="travel-request-workflow"
     )
     return ResponsesHostServer(

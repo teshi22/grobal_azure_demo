@@ -3,6 +3,7 @@
 from agent_framework import WorkflowBuilder
 
 from .agents import TravelAgents
+from .evaluation import EvaluationMode
 from .executors import (
     ApprovalDocumentStep,
     ClarificationStep,
@@ -23,15 +24,16 @@ from .executors import (
 
 
 def build_workflow(agents: TravelAgents):
-    start = MessageToTextStep()
+    evaluation = EvaluationMode(agents.versions)
+    start = MessageToTextStep(evaluation)
     clarifier = RequestClarifierStep(agents)
-    clarification = ClarificationStep()
-    request_confirmation = RequestConfirmationStep()
+    clarification = ClarificationStep(evaluation)
+    request_confirmation = RequestConfirmationStep(evaluation)
     planner = TravelPlannerStep(agents)
-    plan_review = PlanReviewStep()
+    plan_review = PlanReviewStep(evaluation)
     policy = PolicyCheckStep(agents)
     policy_replan = PolicyReplanStep()
-    approval_document = ApprovalDocumentStep(agents)
+    approval_document = ApprovalDocumentStep(agents, evaluation)
     submission_confirmation = SubmissionConfirmationStep()
     submit = SubmitTravelRequestStep()
 
@@ -40,7 +42,13 @@ def build_workflow(agents: TravelAgents):
             name="travel-request-workflow",
             description="Authenticated travel planning and submission workflow.",
             start_executor=start,
-            output_from=[submission_confirmation, submit],
+            output_from=[
+                start,
+                clarification,
+                approval_document,
+                submission_confirmation,
+                submit,
+            ],
         )
         .add_edge(start, clarifier)
         .add_edge(clarifier, clarification, condition=is_incomplete)

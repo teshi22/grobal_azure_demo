@@ -251,6 +251,60 @@ class ApprovalDocument(BaseModel):
     plan_hash: str
 
 
+EvaluationStatus = Literal[
+    "needs_clarification",
+    "draft_ready",
+    "policy_blocked",
+    "error",
+]
+
+
+class EvaluationInputEnvelope(BaseModel):
+    mode: Literal["evaluation"]
+    schema_version: Literal["1"] = "1"
+    case_id: str = Field(min_length=1)
+    input: str = Field(min_length=1)
+
+
+class EvaluationPolicyResult(BaseModel):
+    compliant: bool | None = None
+    details: list[str] = Field(default_factory=list)
+    narrative: str = ""
+
+
+class EvaluationCitation(BaseModel):
+    url: str
+    title: str
+    fare_type: str = ""
+
+
+class EvaluationDiagnostics(BaseModel):
+    schema_version: Literal["1"] = "1"
+    scenario: Literal["agent_framework_workflow"]
+    case_id: str
+    agent_versions: dict[str, str] = Field(default_factory=dict)
+
+
+class EvaluationOutput(BaseModel):
+    status: EvaluationStatus
+    request: ExtractedRequest | None = None
+    clarification_questions: list[str] = Field(default_factory=list)
+    itinerary: TravelPlan | None = None
+    fare_total: int | None = None
+    policy: EvaluationPolicyResult = Field(
+        default_factory=EvaluationPolicyResult
+    )
+    application_draft: str = ""
+    citations: list[EvaluationCitation] = Field(default_factory=list)
+    diagnostics: EvaluationDiagnostics
+
+    @model_validator(mode="after")
+    def reconcile_fare_total(self) -> "EvaluationOutput":
+        if self.itinerary is not None:
+            self.fare_total = self.itinerary.transportation_cost
+        return self
+
+
 @dataclass
 class ClarificationRequest:
     type: str = field(init=False, default="clarification")

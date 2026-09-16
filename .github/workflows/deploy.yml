@@ -15,7 +15,13 @@ env:
   LOCATION: japaneast
   IMAGE_NAME: travel-agent-app
   HOSTED_AGENT_NAME: travel-request-agent
+  SINGLE_PROMPT_AGENT_NAME: travel-request-single-agent
+  CLARIFIER_AGENT_NAME: travel-request-clarifier
+  PLANNER_AGENT_NAME: travel-request-planner
+  POLICY_AGENT_NAME: travel-request-policy-narrator
+  APPROVAL_AGENT_NAME: travel-request-approval-writer
   MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
+  EVALUATION_JUDGE_MODEL: ${{ vars.EVALUATION_JUDGE_MODEL || vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
   MODEL_CAPACITY: ${{ vars.AZURE_AI_MODEL_CAPACITY || '20' }}
   MCP_ENTRA_CLIENT_ID: ${{ secrets.MCP_ENTRA_CLIENT_ID }}
   WEB_ENTRA_CLIENT_ID: ${{ secrets.WEB_ENTRA_CLIENT_ID }}
@@ -84,6 +90,9 @@ jobs:
             echo "COSMOS_ENDPOINT=$(jq -r '.cosmosEndpoint.value' deployment-outputs.json)"
             echo "COSMOS_ACCOUNT_NAME=$(jq -r '.cosmosAccountName.value' deployment-outputs.json)"
             echo "COSMOS_DATABASE=$(jq -r '.cosmosDatabaseName.value' deployment-outputs.json)"
+            echo "COSMOS_EVALUATION_CASE_CONTAINER=$(jq -r '.cosmosEvaluationCaseContainerName.value' deployment-outputs.json)"
+            echo "COSMOS_EVALUATION_RUN_CONTAINER=$(jq -r '.cosmosEvaluationRunContainerName.value' deployment-outputs.json)"
+            echo "COSMOS_EVALUATION_RESULT_CONTAINER=$(jq -r '.cosmosEvaluationResultContainerName.value' deployment-outputs.json)"
             echo "APPLICATIONINSIGHTS_CONNECTION_STRING=$(jq -r '.appInsightsConnectionString.value' deployment-outputs.json)"
             echo "APP_INSIGHTS_RESOURCE_ID=$(jq -r '.appInsightsResourceId.value' deployment-outputs.json)"
             echo "ACR_NAME=$(jq -r '.acrName.value' deployment-outputs.json)"
@@ -120,6 +129,84 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Configure deployment principal access
+        shell: bash
+        env:
+          DEPLOY_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          storage_id=$(az storage account show \
+            --name "$FUNCTION_STORAGE_ACCOUNT" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query id \
+            --output tsv)
+          deploy_principal_id=$(az ad sp show \
+            --id "$DEPLOY_CLIENT_ID" \
+            --query id \
+            --output tsv)
+          for role_scope in \
+            "Foundry Project Manager|$FOUNDRY_PROJECT_RESOURCE_ID" \
+            "Storage Blob Data Contributor|$storage_id" \
+            "AcrPush|$ACR_RESOURCE_ID"; do
+            role="${role_scope%%|*}"
+            scope="${role_scope#*|}"
+            if [[ -z "$(az role assignment list \
+              --assignee-object-id "$deploy_principal_id" \
+              --role "$role" \
+              --scope "$scope" \
+              --query '[0].id' \
+              --output tsv)" ]]; then
+              az role assignment create \
+                --assignee-object-id "$deploy_principal_id" \
+                --assignee-principal-type ServicePrincipal \
+                --role "$role" \
+                --scope "$scope" \
+                --output none
+            fi
+          done
+
+      - name: Synchronize versioned Prompt Agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install \
+            --quiet \
+            "azure-ai-projects>=2.3.0,<2.4.0" \
+            "azure-identity>=1.19.0"
+          versions_file="$RUNNER_TEMP/prompt-agent-versions.json"
+          for attempt in {1..12}; do
+            if python scripts/deploy-prompt-agents.py \
+              --project-endpoint "$PROJECT_ENDPOINT" \
+              --model "$MODEL_DEPLOYMENT_NAME" \
+              --output "$versions_file" \
+              >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" -eq 12 ]]; then
+              echo "Foundry RBAC did not become effective in time." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          {
+            for agent_name_var in \
+              CLARIFIER_AGENT_NAME \
+              PLANNER_AGENT_NAME \
+              POLICY_AGENT_NAME \
+              APPROVAL_AGENT_NAME \
+              SINGLE_PROMPT_AGENT_NAME; do
+              agent_name="${!agent_name_var}"
+              version=$(jq -er --arg name "$agent_name" '.[$name]' "$versions_file")
+              if [[ "$version" == "latest" ]]; then
+                echo "${agent_name} resolved to mutable version 'latest'." >&2
+                exit 1
+              fi
+              version_var="${agent_name_var%_NAME}_VERSION"
+              echo "${version_var}=${version}"
+            done
+          } >> "$GITHUB_ENV"
+
       - name: Build MCP Functions package
         shell: bash
         run: |
@@ -136,64 +223,8 @@ jobs:
 
       - name: Deploy MCP Functions package
         shell: bash
-        env:
-          DEPLOY_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
           set -euo pipefail
-          storage_id=$(az storage account show \
-            --name "$FUNCTION_STORAGE_ACCOUNT" \
-            --resource-group "$RESOURCE_GROUP" \
-            --query id \
-            --output tsv)
-          acr_id=$(az acr show \
-            --name "$ACR_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --query id \
-            --output tsv)
-          deploy_principal_id=$(az ad sp show \
-            --id "$DEPLOY_CLIENT_ID" \
-            --query id \
-            --output tsv)
-          if [[ -z "$(az role assignment list \
-            --assignee-object-id "$deploy_principal_id" \
-            --role "Foundry Project Manager" \
-            --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
-            --query '[0].id' \
-            --output tsv)" ]]; then
-            az role assignment create \
-              --assignee-object-id "$deploy_principal_id" \
-              --assignee-principal-type ServicePrincipal \
-              --role "Foundry Project Manager" \
-              --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
-              --output none
-          fi
-          if [[ -z "$(az role assignment list \
-            --assignee-object-id "$deploy_principal_id" \
-            --role "Storage Blob Data Contributor" \
-            --scope "$storage_id" \
-            --query '[0].id' \
-            --output tsv)" ]]; then
-            az role assignment create \
-              --assignee-object-id "$deploy_principal_id" \
-              --assignee-principal-type ServicePrincipal \
-              --role "Storage Blob Data Contributor" \
-              --scope "$storage_id" \
-              --output none
-          fi
-          if [[ -z "$(az role assignment list \
-            --assignee-object-id "$deploy_principal_id" \
-            --role "AcrPush" \
-            --scope "$acr_id" \
-            --query '[0].id' \
-            --output tsv)" ]]; then
-            az role assignment create \
-              --assignee-object-id "$deploy_principal_id" \
-              --assignee-principal-type ServicePrincipal \
-              --role "AcrPush" \
-              --scope "$acr_id" \
-              --output none
-          fi
-
           for attempt in {1..12}; do
             if az storage blob upload \
               --account-name "$FUNCTION_STORAGE_ACCOUNT" \
@@ -217,8 +248,83 @@ jobs:
             --resource-group "$RESOURCE_GROUP" \
             --output none
 
+      - name: Configure azd environment
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --tenant-id "$AZURE_TENANT_ID" \
+            --federated-credential-provider github
+          if ! azd env select "$AZURE_ENV_NAME" --no-prompt >/dev/null 2>&1; then
+            azd env new "$AZURE_ENV_NAME" --no-prompt
+          fi
+          azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID"
+          azd env set AZURE_RESOURCE_GROUP "$RESOURCE_GROUP"
+          azd env set AZURE_LOCATION "$LOCATION"
+          azd env set AZURE_AI_PROJECT_NAME "$PROJECT_NAME"
+          azd env set AZURE_AI_PROJECT_ID "$FOUNDRY_PROJECT_RESOURCE_ID"
+          azd env set AZURE_AI_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
+          azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_LOGIN_SERVER"
+          azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$ACR_RESOURCE_ID"
+          azd env set FOUNDRY_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
+          azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_DEPLOYMENT_NAME"
+          azd env set CLARIFIER_AGENT_NAME "$CLARIFIER_AGENT_NAME"
+          azd env set CLARIFIER_AGENT_VERSION "$CLARIFIER_AGENT_VERSION"
+          azd env set PLANNER_AGENT_NAME "$PLANNER_AGENT_NAME"
+          azd env set PLANNER_AGENT_VERSION "$PLANNER_AGENT_VERSION"
+          azd env set POLICY_AGENT_NAME "$POLICY_AGENT_NAME"
+          azd env set POLICY_AGENT_VERSION "$POLICY_AGENT_VERSION"
+          azd env set APPROVAL_AGENT_NAME "$APPROVAL_AGENT_NAME"
+          azd env set APPROVAL_AGENT_VERSION "$APPROVAL_AGENT_VERSION"
+          azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
+          azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
+          azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
+          azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"
+          azd env set COSMOS_CHECKPOINT_CONTAINER "workflow-checkpoints"
+
+      - name: Deploy Foundry Hosted Agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          azd deploy "$HOSTED_AGENT_NAME" --no-prompt
+
+      - name: Resolve Hosted Agent version
+        shell: bash
+        run: |
+          set -euo pipefail
+          hosted_agent_version=""
+          for attempt in {1..30}; do
+            agent_json=$(azd ai agent show "$HOSTED_AGENT_NAME" \
+              --output json \
+              --no-prompt 2>/dev/null || true)
+            hosted_agent_version=$(jq -r '.version // empty' <<<"$agent_json")
+            hosted_agent_status=$(jq -r '.status // empty' <<<"$agent_json")
+            if [[ -n "$hosted_agent_version" && "$hosted_agent_status" == "active" ]]; then
+              break
+            fi
+            if [[ "$hosted_agent_status" == "failed" ]]; then
+              echo "Hosted Agent version ${hosted_agent_version} failed to activate." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          if [[ -z "$hosted_agent_version" \
+            || "$hosted_agent_version" == "latest" \
+            || "$hosted_agent_status" != "active" ]]; then
+            echo "Could not resolve an immutable Hosted Agent version." >&2
+            exit 1
+          fi
+          echo "HOSTED_AGENT_VERSION=${hosted_agent_version}" >> "$GITHUB_ENV"
+
       - name: Build and deploy BFF container
         shell: bash
+        env:
+          ENTRA_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         run: |
           set -euo pipefail
           image_tag="${IMAGE_NAME}:${GITHUB_SHA}"
@@ -243,42 +349,18 @@ jobs:
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --image "${ACR_LOGIN_SERVER}/${image_tag}" \
+            --set-env-vars \
+              "AZURE_AI_MODEL_DEPLOYMENT_NAME=$MODEL_DEPLOYMENT_NAME" \
+              "HOSTED_AGENT_NAME=$HOSTED_AGENT_NAME" \
+              "HOSTED_AGENT_VERSION=$HOSTED_AGENT_VERSION" \
+              "SINGLE_PROMPT_AGENT_NAME=$SINGLE_PROMPT_AGENT_NAME" \
+              "SINGLE_PROMPT_AGENT_VERSION=$SINGLE_PROMPT_AGENT_VERSION" \
+              "EVALUATION_JUDGE_MODEL=$EVALUATION_JUDGE_MODEL" \
+              "ENTRA_TENANT_ID=$ENTRA_TENANT_ID" \
+              "COSMOS_EVALUATION_CASE_CONTAINER=$COSMOS_EVALUATION_CASE_CONTAINER" \
+              "COSMOS_EVALUATION_RUN_CONTAINER=$COSMOS_EVALUATION_RUN_CONTAINER" \
+              "COSMOS_EVALUATION_RESULT_CONTAINER=$COSMOS_EVALUATION_RESULT_CONTAINER" \
             --output none
-
-      - name: Configure azd environment
-        shell: bash
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          set -euo pipefail
-          azd auth login \
-            --client-id "$AZURE_CLIENT_ID" \
-            --tenant-id "$AZURE_TENANT_ID" \
-            --federated-credential-provider github
-          azd env new "$AZURE_ENV_NAME" --no-prompt
-          azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID"
-          azd env set AZURE_RESOURCE_GROUP "$RESOURCE_GROUP"
-          azd env set AZURE_LOCATION "$LOCATION"
-          azd env set AZURE_AI_PROJECT_NAME "$PROJECT_NAME"
-          azd env set AZURE_AI_PROJECT_ID "$FOUNDRY_PROJECT_RESOURCE_ID"
-          azd env set AZURE_AI_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
-          azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_LOGIN_SERVER"
-          azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$ACR_RESOURCE_ID"
-          azd env set FOUNDRY_PROJECT_ENDPOINT "$PROJECT_ENDPOINT"
-          azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_DEPLOYMENT_NAME"
-          azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
-          azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
-          azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
-          azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"
-          azd env set COSMOS_CHECKPOINT_CONTAINER "workflow-checkpoints"
-
-      - name: Deploy Foundry Hosted Agent
-        shell: bash
-        run: |
-          set -euo pipefail
-          azd deploy "$HOSTED_AGENT_NAME" --no-prompt
 
       - name: Configure Hosted Agent access
         shell: bash
@@ -288,13 +370,105 @@ jobs:
           set -euo pipefail
           bash scripts/configure-hosted-agent.sh
 
-      - name: Smoke test deployment
+      - name: Seed evaluation cases
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 12 --retry-delay 10 \
             "$APP_URL/health"
-          python -m pip install --quiet azure-ai-projects azure-identity
+          access_token=$(az account get-access-token \
+            --resource "$WEB_ENTRA_CLIENT_ID" \
+            --query accessToken \
+            --output tsv)
+          seed_payload="$RUNNER_TEMP/evaluation-seed.json"
+          jq -s '{cases: ., overwrite: false}' \
+            evaluation-data/travel-request-cases.jsonl > "$seed_payload"
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${access_token}" \
+            --header "Content-Type: application/json" \
+            --data-binary "@${seed_payload}" \
+            "$APP_URL/api/evaluations/cases/import" \
+            --output "$RUNNER_TEMP/evaluation-seed-response.json"
+
+      - name: Run paired evaluation smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          access_token=$(az account get-access-token \
+            --resource "$WEB_ENTRA_CLIENT_ID" \
+            --query accessToken \
+            --output tsv)
+          run_response="$RUNNER_TEMP/evaluation-smoke-run.json"
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${access_token}" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "name": "deployment-smoke-${{ github.run_id }}",
+              "dataset_id": "travel-request-v1",
+              "case_ids": [
+                "case-standard-tokyo-osaka",
+                "case-standard-osaka-fukuoka"
+              ]
+            }' \
+            "$APP_URL/api/evaluations/runs" \
+            --output "$run_response"
+          run_id=$(jq -er '.id' "$run_response")
+
+          run_status=""
+          for attempt in {1..120}; do
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${access_token}" \
+              "$APP_URL/api/evaluations/runs/${run_id}" \
+              --output "$run_response"
+            run_status=$(jq -r '.status // empty' "$run_response")
+            case "$run_status" in
+              completed|succeeded|success)
+                break
+                ;;
+              failed|error|cancelled|canceled|partial_failure|partially_completed)
+                jq '{id, status, error, scenario_runs}' "$run_response" >&2
+                exit 1
+                ;;
+            esac
+            if [[ "$attempt" -eq 120 ]]; then
+              echo "Paired evaluation smoke test timed out." >&2
+              exit 1
+            fi
+            sleep 15
+          done
+
+          jq -e \
+            --arg hosted_version "$HOSTED_AGENT_VERSION" \
+            --arg single_version "$SINGLE_PROMPT_AGENT_VERSION" \
+            '.scenario_runs.agent_framework_workflow.agent_version == $hosted_version
+             and .scenario_runs.single_prompt_agent.agent_version == $single_version' \
+            "$run_response" >/dev/null
+
+          results_response="$RUNNER_TEMP/evaluation-smoke-results.json"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${access_token}" \
+            "$APP_URL/api/evaluations/runs/${run_id}/results" \
+            --output "$results_response"
+          jq -e '
+            def comparisons:
+              if type == "array" then .
+              else (.results // .comparisons // .items // [])
+              end;
+            (comparisons | length) == 2
+            and all(comparisons[];
+              .scenarios.agent_framework_workflow != null
+              and .scenarios.single_prompt_agent != null
+              and ((.scenarios.agent_framework_workflow.error // "") == "")
+              and ((.scenarios.single_prompt_agent.error // "") == "")
+            )
+          ' "$results_response" >/dev/null
+
+      - name: Smoke test Hosted Agent resume
+        shell: bash
+        run: |
+          set -euo pipefail
           python scripts/smoke-hosted-agent.py \
             --project-endpoint "$PROJECT_ENDPOINT" \
             --agent-name "$HOSTED_AGENT_NAME"

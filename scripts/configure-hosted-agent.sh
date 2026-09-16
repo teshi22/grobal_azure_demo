@@ -32,6 +32,20 @@ fi
 
 if [[ -z "$(az role assignment list \
   --assignee-object-id "$agent_principal_id" \
+  --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
+  --role "Foundry Agent Consumer" \
+  --query '[0].id' \
+  --output tsv)" ]]; then
+  az role assignment create \
+    --assignee-object-id "$agent_principal_id" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Foundry Agent Consumer" \
+    --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
+    --output none
+fi
+
+if [[ -z "$(az role assignment list \
+  --assignee-object-id "$agent_principal_id" \
   --scope "$APP_INSIGHTS_RESOURCE_ID" \
   --role "Monitoring Metrics Publisher" \
   --query '[0].id' \
@@ -54,20 +68,6 @@ bff_principal_id=$(az containerapp show \
   --name "$CONTAINER_APP_NAME" \
   --query identity.principalId \
   --output tsv)
-
-if [[ -z "$(az role assignment list \
-  --assignee-object-id "$bff_principal_id" \
-  --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
-  --role "Foundry Agent Consumer" \
-  --query '[0].id' \
-  --output tsv)" ]]; then
-  az role assignment create \
-    --assignee-object-id "$bff_principal_id" \
-    --assignee-principal-type ServicePrincipal \
-    --role "Foundry Agent Consumer" \
-    --scope "$FOUNDRY_PROJECT_RESOURCE_ID" \
-    --output none
-fi
 
 impersonation_role_name="Foundry Agent User Identity Impersonation ${FOUNDRY_ACCOUNT_RESOURCE_ID##*/}"
 if [[ -z "$(az role definition list \
