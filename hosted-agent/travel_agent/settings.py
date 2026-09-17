@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     cosmos_database_name: str = "travel-agent"
     cosmos_checkpoint_container: str = "workflow-checkpoints"
     mcp_tool_endpoint: str = ""
+    mcp_connection_id: str = ""
     mcp_function_app_client_id: str = ""
 
     model_config = {

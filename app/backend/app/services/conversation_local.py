@@ -76,6 +76,8 @@ class LocalConversationStore:
         message_id: str,
         user_id: str,
         content: str,
+        approval_request_id: str | None = None,
+        approve: bool | None = None,
     ) -> bool:
         async with self._lock:
             item = self._items.get(conversation_id)
@@ -91,6 +93,8 @@ class LocalConversationStore:
                 "message_id": message_id,
                 "user_id": user_id,
                 "content": content,
+                "approval_request_id": approval_request_id,
+                "approve": approve,
                 "idempotency_key": idempotency_key,
             }
             item["processing_lease_until"] = None
@@ -102,7 +106,7 @@ class LocalConversationStore:
         conversation_id: str,
         *,
         lease_minutes: int = 10,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         async with self._lock:
             item = self._items.get(conversation_id)
             if item is None or item.get("status") != "processing":
@@ -128,6 +132,10 @@ class LocalConversationStore:
                 "message_id": str(active_message["message_id"]),
                 "user_id": str(active_message["user_id"]),
                 "content": str(active_message["content"]),
+                "approval_request_id": active_message.get(
+                    "approval_request_id"
+                ),
+                "approve": active_message.get("approve"),
                 "idempotency_key": str(active_message["idempotency_key"]),
             }
 

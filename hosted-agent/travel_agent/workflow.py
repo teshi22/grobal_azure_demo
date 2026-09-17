@@ -13,8 +13,7 @@ from .executors import (
     PolicyReplanStep,
     RequestClarifierStep,
     RequestConfirmationStep,
-    SubmissionConfirmationStep,
-    SubmitTravelRequestStep,
+    SubmissionApprovalStep,
     TravelPlannerStep,
     is_complete,
     is_compliant,
@@ -34,8 +33,7 @@ def build_workflow(agents: TravelAgents):
     policy = PolicyCheckStep(agents)
     policy_replan = PolicyReplanStep()
     approval_document = ApprovalDocumentStep(agents, evaluation)
-    submission_confirmation = SubmissionConfirmationStep()
-    submit = SubmitTravelRequestStep()
+    submission_approval = SubmissionApprovalStep(agents)
 
     return (
         WorkflowBuilder(
@@ -46,8 +44,7 @@ def build_workflow(agents: TravelAgents):
                 start,
                 clarification,
                 approval_document,
-                submission_confirmation,
-                submit,
+                submission_approval,
             ],
         )
         .add_edge(start, clarifier)
@@ -62,7 +59,6 @@ def build_workflow(agents: TravelAgents):
         .add_edge(policy, policy_replan, condition=is_noncompliant)
         .add_edge(policy_replan, planner)
         .add_edge(policy, approval_document, condition=is_compliant)
-        .add_edge(approval_document, submission_confirmation)
-        .add_edge(submission_confirmation, submit)
+        .add_edge(approval_document, submission_approval)
         .build()
     )

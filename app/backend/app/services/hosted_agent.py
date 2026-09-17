@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -49,6 +50,72 @@ def _extract_output_text(response: dict[str, Any]) -> str:
     )
 
 
+def _extract_hitl_display(output: str) -> tuple[str, dict[str, Any]]:
+    marker = "```json"
+    if marker not in output:
+        return output, {}
+    message, _, remainder = output.partition(marker)
+    payload, separator, _ = remainder.partition("```")
+    if not separator:
+        return output, {}
+    try:
+        data = json.loads(payload.strip())
+    except json.JSONDecodeError:
+        return output, {}
+    if not isinstance(data, dict):
+        return output, {}
+    return message.strip(), data
+
+
+def _extract_mcp_approval_request(
+    response: dict[str, Any],
+    output: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    approvals = [
+        item
+        for item in response.get("output", [])
+        if item.get("type") == "mcp_approval_request"
+    ]
+    if not approvals:
+        return None
+    if len(approvals) != 1:
+        raise RuntimeError("Agent returned multiple MCP approval requests")
+    approval = approvals[0]
+    approval_request_id = str(approval.get("id", "")).strip()
+    if not approval_request_id:
+        raise RuntimeError("MCP approval request has no ID")
+    arguments = approval.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "MCP approval request has invalid arguments"
+            ) from exc
+    if not isinstance(arguments, dict):
+        raise RuntimeError("MCP approval request arguments must be an object")
+    message, display_data = _extract_hitl_display(output)
+    pending = {
+        "type": "mcp_approval",
+        "approval_request_id": approval_request_id,
+    }
+    event = {
+        "type": "submit_confirmation",
+        "message": message or "MCPツールの実行を承認しますか？",
+        "data": {
+            **display_data,
+            "approval_request_id": approval_request_id,
+            "tool_name": str(approval.get("name", "")),
+            "server_label": str(approval.get("server_label", "")),
+            "arguments": arguments,
+            "application_text": str(
+                display_data.get("application_text") or output
+            ),
+        },
+    }
+    return pending, event
+
+
 def _conversation_route(conversation: dict[str, Any]) -> str:
     scenario = str(
         conversation.get("scenario") or "agent_framework_workflow"
@@ -66,8 +133,10 @@ def _invoke_for_conversation(
     scenario: str,
     conversation_id: str,
     user_id: str,
-    message: str,
+    message: str | None = None,
     previous_response_id: str | None = None,
+    approval_request_id: str | None = None,
+    approve: bool | None = None,
 ):
     if scenario == "agent_framework_workflow":
         return invoke_hosted_agent(
@@ -75,12 +144,16 @@ def _invoke_for_conversation(
             user_id=user_id,
             message=message,
             previous_response_id=previous_response_id,
+            approval_request_id=approval_request_id,
+            approve=approve,
         )
     if scenario == "single_prompt_agent":
         return invoke_single_prompt_agent(
             conversation_id=conversation_id,
             message=message,
             previous_response_id=previous_response_id,
+            approval_request_id=approval_request_id,
+            approve=approve,
         )
     raise ValueError(f"Unsupported conversation scenario: {scenario}")
 
@@ -92,6 +165,8 @@ async def process_message(
     content: str,
     message_id: str,
     idempotency_key: str,
+    approval_request_id: str | None = None,
+    approve: bool | None = None,
 ) -> None:
     """Invoke or resume the stored scenario and persist normalized UI events."""
     conversations = get_conversation_store()
@@ -102,14 +177,40 @@ async def process_message(
             raise LookupError("Conversation not found")
 
         scenario = _conversation_route(conversation)
-        response = await asyncio.to_thread(
-            _invoke_for_conversation,
-            scenario=scenario,
-            conversation_id=conversation_id,
-            user_id=user_id,
-            message=content,
-            previous_response_id=conversation.get("foundry_response_id"),
-        )
+        pending = conversation.get("pending_request") or {}
+        if pending.get("type") == "mcp_approval":
+            expected_id = str(pending.get("approval_request_id", ""))
+            if (
+                approval_request_id != expected_id
+                or not isinstance(approve, bool)
+            ):
+                raise RuntimeError(
+                    "Use the approval control for the pending MCP tool call"
+                )
+            response = await asyncio.to_thread(
+                _invoke_for_conversation,
+                scenario=scenario,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                previous_response_id=conversation.get(
+                    "foundry_response_id"
+                ),
+                approval_request_id=approval_request_id,
+                approve=approve,
+            )
+        else:
+            if approval_request_id is not None or approve is not None:
+                raise RuntimeError("There is no pending MCP approval request")
+            response = await asyncio.to_thread(
+                _invoke_for_conversation,
+                scenario=scenario,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                message=content,
+                previous_response_id=conversation.get(
+                    "foundry_response_id"
+                ),
+            )
 
         response_data = response_to_dict(response)
         _raise_for_response_error(response_data)
@@ -117,7 +218,6 @@ async def process_message(
         output = _extract_output_text(response_data)
         unexpected_callbacks = {
             "function_call",
-            "mcp_approval_request",
         }.intersection(
             str(item.get("type", ""))
             for item in response_data.get("output", [])
@@ -128,7 +228,34 @@ async def process_message(
                 + ", ".join(sorted(unexpected_callbacks))
             )
         if not output:
-            raise RuntimeError("Agent returned no message")
+            approval_request = _extract_mcp_approval_request(
+                response_data,
+                output,
+            )
+            if not approval_request:
+                raise RuntimeError("Agent returned no message")
+        else:
+            approval_request = _extract_mcp_approval_request(
+                response_data,
+                output,
+            )
+        if approval_request:
+            next_pending, hitl_event = approval_request
+            await conversations.update(
+                conversation_id,
+                status="awaiting_input",
+                foundry_response_id=response_id,
+                pending_request=next_pending,
+                active_message=None,
+                processing_lease_until=None,
+            )
+            await events.append(
+                conversation_id,
+                "hitl_request",
+                hitl_event,
+                message_id=message_id,
+            )
+            return
 
         await conversations.update(
             conversation_id,
@@ -173,6 +300,8 @@ async def process_queued_message(conversation_id: str) -> None:
         content=message["content"],
         message_id=message["message_id"],
         idempotency_key=message["idempotency_key"],
+        approval_request_id=message.get("approval_request_id"),
+        approve=message.get("approve"),
     )
 
 

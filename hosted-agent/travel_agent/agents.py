@@ -7,8 +7,11 @@ from typing import Any, Mapping, Protocol
 
 from agent_framework.foundry import FoundryAgent
 
+from .submission_agent import MCPSubmissionAgent
+
 
 class PromptAgentSettings(Protocol):
+    azure_ai_model_deployment_name: str
     clarifier_agent_name: str
     clarifier_agent_version: str
     planner_agent_name: str
@@ -19,6 +22,8 @@ class PromptAgentSettings(Protocol):
     policy_agent_version: str
     approval_agent_name: str
     approval_agent_version: str
+    mcp_tool_endpoint: str
+    mcp_connection_id: str
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,7 @@ class TravelAgents:
     plan_reviewer: FoundryAgent
     policy: FoundryAgent
     approval: FoundryAgent
+    submission: MCPSubmissionAgent | None = None
     versions: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -91,5 +97,12 @@ def create_agents(
         plan_reviewer=agents["plan_reviewer"],
         policy=agents["policy"],
         approval=agents["approval"],
+        submission=MCPSubmissionAgent(
+            project_endpoint=project_endpoint,
+            model=config.azure_ai_model_deployment_name,
+            server_url=config.mcp_tool_endpoint,
+            connection_id=config.mcp_connection_id,
+            credential=credential,
+        ),
         versions=versions,
     )

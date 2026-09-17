@@ -62,6 +62,7 @@ export interface ChatMessage {
   policyResult?: PolicyResultData;
   completionData?: CompletionData;
   responded?: boolean;
+  approvalDecision?: "approved" | "rejected";
 }
 
 export type ConversationScenario =

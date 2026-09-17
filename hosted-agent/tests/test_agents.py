@@ -17,6 +17,9 @@ def _settings(**changes):
         "policy_agent_version": "4",
         "approval_agent_name": "travel-request-approval-writer",
         "approval_agent_version": "5",
+        "azure_ai_model_deployment_name": "gpt-test",
+        "mcp_tool_endpoint": "https://example.test/mcp",
+        "mcp_connection_id": "travel-request-mcp",
     }
     values.update(changes)
     return SimpleNamespace(**values)
@@ -30,6 +33,11 @@ def test_create_agents_connects_to_pinned_foundry_versions(monkeypatch):
         return SimpleNamespace(**kwargs)
 
     monkeypatch.setattr(agent_module, "FoundryAgent", fake_foundry_agent)
+    monkeypatch.setattr(
+        agent_module,
+        "MCPSubmissionAgent",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
 
     agents = agent_module.create_agents(
         project_endpoint="https://example.test/api/projects/test",
@@ -52,6 +60,9 @@ def test_create_agents_connects_to_pinned_foundry_versions(monkeypatch):
         "travel-request-policy-narrator": "4",
         "travel-request-approval-writer": "5",
     }
+    assert agents.submission.model == "gpt-test"
+    assert agents.submission.server_url == "https://example.test/mcp"
+    assert agents.submission.connection_id == "travel-request-mcp"
 
 
 def test_create_agents_rejects_unpinned_prompt_agent(monkeypatch):

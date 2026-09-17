@@ -230,6 +230,33 @@ export async function sendMessage(
   return res.json();
 }
 
+export async function sendApproval(
+  conversationId: string,
+  approvalRequestId: string,
+  approve: boolean,
+  idempotencyKey?: string,
+): Promise<MessageResult> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
+  const res = await fetch(
+    `${API_BASE}/conversations/${conversationId}/messages`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        approval_request_id: approvalRequestId,
+        approve,
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`Failed to send approval: ${res.status}`);
+  return res.json();
+}
+
 export function createEventSource(
   conversationId: string,
   lastEventId?: string,

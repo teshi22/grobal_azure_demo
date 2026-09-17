@@ -53,14 +53,33 @@ def get_hosted_responses_client():
 def invoke_conversation_agent(
     *,
     agent_name: str,
-    message_envelope: dict[str, Any],
+    message_envelope: dict[str, Any] | None = None,
     previous_response_id: str | None = None,
+    approval_request_id: str | None = None,
+    approve: bool | None = None,
     agent_session_id: str | None = None,
     user_identity: str | None = None,
 ):
     """Start or resume a durable Foundry Agent chat response."""
+    if message_envelope is not None:
+        if approval_request_id is not None or approve is not None:
+            raise ValueError("Provide a message or an MCP approval, not both")
+        response_input: str | list[dict[str, Any]] = json.dumps(
+            message_envelope,
+            ensure_ascii=False,
+        )
+    else:
+        if not approval_request_id or not isinstance(approve, bool):
+            raise ValueError("MCP approval request ID and decision are required")
+        response_input = [
+            {
+                "type": "mcp_approval_response",
+                "approval_request_id": approval_request_id,
+                "approve": approve,
+            }
+        ]
     kwargs: dict[str, Any] = {
-        "input": json.dumps(message_envelope, ensure_ascii=False),
+        "input": response_input,
         "store": True,
         "stream": False,
     }
@@ -82,17 +101,25 @@ def invoke_hosted_agent(
     *,
     conversation_id: str,
     user_id: str,
-    message: str,
+    message: str | None = None,
     previous_response_id: str | None = None,
+    approval_request_id: str | None = None,
+    approve: bool | None = None,
 ):
-    """Start or resume a Hosted Agent with an ordinary chat turn."""
+    """Start or resume a Hosted Agent chat or native MCP approval."""
     return invoke_conversation_agent(
         agent_name=settings.hosted_agent_name,
-        message_envelope={
-            "conversation_id": conversation_id,
-            "message": message,
-        },
+        message_envelope=(
+            {
+                "conversation_id": conversation_id,
+                "message": message,
+            }
+            if message is not None
+            else None
+        ),
         previous_response_id=previous_response_id,
+        approval_request_id=approval_request_id,
+        approve=approve,
         agent_session_id=conversation_id,
         user_identity=user_id,
     )
@@ -101,17 +128,25 @@ def invoke_hosted_agent(
 def invoke_single_prompt_agent(
     *,
     conversation_id: str,
-    message: str,
+    message: str | None = None,
     previous_response_id: str | None = None,
+    approval_request_id: str | None = None,
+    approve: bool | None = None,
 ):
-    """Start or resume an interactive Single Prompt Agent conversation."""
+    """Start or resume a Prompt Agent chat or native MCP approval."""
     return invoke_conversation_agent(
         agent_name=settings.single_prompt_agent_name,
-        message_envelope={
-            "conversation_id": conversation_id,
-            "input": message,
-        },
+        message_envelope=(
+            {
+                "conversation_id": conversation_id,
+                "input": message,
+            }
+            if message is not None
+            else None
+        ),
         previous_response_id=previous_response_id,
+        approval_request_id=approval_request_id,
+        approve=approve,
     )
 
 

@@ -340,6 +340,7 @@ jobs:
           azd env set APPROVAL_AGENT_NAME "$APPROVAL_AGENT_NAME"
           azd env set APPROVAL_AGENT_VERSION "$APPROVAL_AGENT_VERSION"
           azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
+          azd env set MCP_CONNECTION_ID "$MCP_CONNECTION_ID"
           azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
           azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
           azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"

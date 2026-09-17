@@ -166,10 +166,14 @@ auth_config=$(jq \
   '.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications = ([$agent_client_id, $project_client_id] | unique)
    | {properties: .properties}' \
   <<<"$auth_config")
+auth_config_file=$(mktemp "./.function-auth.XXXXXX.json")
+trap 'rm -f "$auth_config_file"' EXIT
+printf '%s' "$auth_config" >"$auth_config_file"
 az rest \
   --method PUT \
   --url "https://management.azure.com${function_auth_id}?api-version=2024-04-01" \
-  --body "$auth_config" \
+  --headers "Content-Type=application/json" \
+  --body "@${auth_config_file}" \
   --output none
 
 echo "Configured Hosted Agent identity ${agent_principal_id}, Foundry project identity ${project_principal_id}, and BFF impersonation access."

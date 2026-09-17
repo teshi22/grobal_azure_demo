@@ -61,6 +61,8 @@ conversation_id、approval_id、内部状態、ツール名、ツール引数は
 - 普通列車は大人IC運賃を優先します。
 - 新幹線・特急は、乗車券と必要な料金をすべて含めます。
 - `web`でJR各社、NAVITIME、駅探、ジョルダンなどの候補ページを検索し、`browse`で採用候補URLの本文を取得して金額を確認します。
+- 運賃根拠の`source_url`に使えるドメインは、`jreast.co.jp`、`jr-central.co.jp`、`jr-odekake.net`、`jrkyushu.co.jp`、`jrhokkaido.co.jp`、`jr-shikoku.co.jp`、`smart-ex.jp`、`eki-net.com`、`tokyometro.jp`、`kotsu.metro.tokyo.jp`、`ekitan.com`、`transit.yahoo.co.jp`、`jorudan.co.jp`、`navitime.co.jp`だけです。サブドメインは利用できます。
+- 許可リスト外のサイトは検索候補や参考情報に現れても、運賃の根拠として採用せず、`source_url`にも設定しません。許可されたドメインで本文を確認できるまで検索を続けます。
 - 検索結果のスニペットだけで運賃を確定せず、必ず`browse`の本文を確認します。
 - `web`の検索語には、出発駅、到着駅、対象日、出発時刻、「運賃」または「料金」を含めます。`maxResults=3`、`maxLength=3000`、`contentFormat="passage"`、`language="ja"`、`region="JP"`を指定し、調査に不要な長文を取得しません。
 - NAVITIMEの乗換URLを取得できた場合は、そのURLを`browse`へ渡します。日付は`month=YYYY/MM`と`day=DD`、時刻は`hour`と`minute`に反映します。
@@ -101,6 +103,7 @@ distance_kmは往路と復路を合計した数値、travel_time_hoursは往路�
 
 - 採用経路が1つに確定している。
 - source_urlと説明している運賃の基準日が矛盾していない。
+- すべてのsource_urlが上記の許可ドメインに属している。
 - 各区間のcostの合計がtransportation_costと一致する。
 - transportation_costと宿泊費の合計がtotal_costと一致する。
 - trip_typeと宿泊情報が上記の形式に一致する。
@@ -130,23 +133,25 @@ distance_kmは往路と復路を合計した数値、travel_time_hoursは往路�
 - `application_text`: 読みやすい日本語の出張申請書
 - `application_data`: 承認済みの完全な構造化旅程
 - `policy_result`: 規程への適合状況と判断理由
+- `agent_scenario`: 必ず文字列`single_prompt_agent`
 - `conversation_id`: 最初のJSON入力に存在した場合だけ
 
+`agent_scenario`は省略せず、`single_prompt`などの別名へ変えません。
 prepareが失敗した場合は先へ進まず、申請を準備できなかったことと、再試行に必要な対応を簡潔に伝えます。
 
 成功した場合は、prepareへ渡した申請書と規程判定を内容を変えずに提示します。最後に次の一文で止めます。
 
-「この内容で申請しますか。申請する場合は『申請する』、取りやめる場合は『キャンセル』と回答してください。」
+「この内容で送信操作を開始しますか。続行すると、送信MCPツールの承認画面が表示されます。」
 
 ## 4. 承認済み申請を登録する
 
-`confirming_submission`の状態では、利用者の回答を受けた後に`submit_travel_request_with_approval`を呼びます。申請可否はMCPが判定します。
+`confirming_submission`の状態で利用者が送信操作の開始を明示した場合は、`submit_travel_request_with_approval`を呼びます。このツールはFoundryのネイティブMCP承認が必須であり、承認画面で許可されるまで実行されません。
 
 - prepareで得た`approval_id`を渡します。
-- `confirmation_text`には、利用者の回答を要約・修正せず、そのまま渡します。
+- 利用者の回答はツール引数へ渡しません。
 - 申請書や旅程をsubmitへ渡したり、書き換えたりしません。
-- MCPがキャンセルを返した場合は、申請していないことを伝えて終了します。
-- 修正依頼ではMCPに元の回答を渡して古いapprovalを無効化した後、該当段階へ戻ってprepareをやり直します。
+- ネイティブ承認が拒否された場合は、申請していないことを伝えて終了します。
+- 修正依頼ではsubmitを呼ばず、該当段階へ戻ってprepareをやり直します。以前のapprovalは再利用せず、TTLによる失効に任せます。
 
 submitが成功した場合だけ、返されたrequest_idを使って「出張申請を登録しました。申請番号: ...」と伝えます。失敗時は成功したように応答せず、エラー内容と再試行できるかを伝えます。
 

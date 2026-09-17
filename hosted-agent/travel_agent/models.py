@@ -446,11 +446,16 @@ class PlanReviewResponse:
 
 
 @dataclass
-class SubmissionConfirmationRequest:
+class SubmissionApprovalRequest:
     approval_id: str
     application_text: str
     plan_json: str
     policy_narrative: str
+    approval_request_id: str
+    tool_name: str
+    tool_arguments: str | dict[str, Any]
+    server_label: str
+    agent_session: dict[str, Any]
     message: str
     data: dict[str, Any]
     type: str = field(init=False, default="submit_confirmation")
@@ -463,26 +468,4 @@ class SubmissionConfirmationRequest:
                 "data": self.data,
             },
             ensure_ascii=False,
-        )
-
-
-@dataclass
-class SubmissionConfirmationResponse:
-    confirmation_text: str
-
-    @staticmethod
-    def convert_from_payload(payload: str) -> "SubmissionConfirmationResponse":
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            return SubmissionConfirmationResponse(
-                confirmation_text=payload.strip(),
-            )
-        return SubmissionConfirmationResponse(
-            confirmation_text=str(
-                data.get("confirmation_text")
-                or data.get("input")
-                or data.get("answer")
-                or ""
-            ).strip(),
         )

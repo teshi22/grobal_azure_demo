@@ -84,7 +84,9 @@ MCP_TOOLS = [
                         "agent_framework_workflow",
                     ],
                     "description": (
-                        "会話IDなしで直接実行する場合のAgentシナリオ"
+                        "呼び出し元。Single Prompt Agentは必ず"
+                        "single_prompt_agent、Hosted Agentは必ず"
+                        "agent_framework_workflowを指定する"
                     ),
                 },
                 "application_data": {
@@ -98,16 +100,22 @@ MCP_TOOLS = [
             },
             "required": [
                 "application_text",
+                "agent_scenario",
                 "application_data",
                 "policy_result",
             ],
             "additionalProperties": False,
         },
+        "_meta": {
+            "tool_configuration": {
+                "require_approval": "never",
+            }
+        },
     },
     {
         "name": "submit_travel_request_with_approval",
         "description": (
-            "MCPで固定した申請への回答を検証し、明示承認なら登録する"
+            "FoundryのMCP承認後に、固定済みの出張申請を登録する"
         ),
         "inputSchema": {
             "type": "object",
@@ -116,16 +124,16 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": "prepare_travel_request_submissionが返した短命approval ID",
                 },
-                "confirmation_text": {
-                    "type": "string",
-                    "description": "加工していない利用者の最終回答",
-                },
             },
             "required": [
                 "approval_id",
-                "confirmation_text",
             ],
             "additionalProperties": False,
+        },
+        "_meta": {
+            "tool_configuration": {
+                "require_approval": "always",
+            }
         },
     },
 ]

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createConversation,
   createEventSource,
+  sendApproval,
   sendMessage,
 } from "@/lib/api";
 import type {
@@ -18,6 +19,10 @@ import type {
 interface RetryState {
   content: string;
   idempotencyKey?: string;
+  approval?: {
+    requestId: string;
+    approve: boolean;
+  };
 }
 
 function messageFromError(error: unknown): string {
@@ -243,6 +248,7 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
       content: string,
       appendUserMessage: boolean,
       retryKey?: string,
+      approval?: RetryState["approval"],
     ): Promise<boolean> => {
       const trimmed = content.trim();
       if (!trimmed || isLoadingRef.current) return false;
@@ -280,18 +286,35 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
 
         idempotencyKey ??=
           `${convId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        retryRef.current = { content: trimmed, idempotencyKey };
+        retryRef.current = { content: trimmed, idempotencyKey, approval };
         connectSSE(convId, generation);
-        await sendMessage(convId, trimmed, idempotencyKey);
+        if (approval) {
+          await sendApproval(
+            convId,
+            approval.requestId,
+            approval.approve,
+            idempotencyKey,
+          );
+        } else {
+          await sendMessage(convId, trimmed, idempotencyKey);
+        }
         if (generationRef.current !== generation) return false;
 
-        retryRef.current = { content: trimmed };
+        retryRef.current = { content: trimmed, approval };
         setCanRetry(false);
         if (hitlMessageBeingAnswered) {
           setMessages((current) =>
             current.map((message) =>
               message.id === hitlMessageBeingAnswered
-                ? { ...message, responded: true }
+                ? {
+                    ...message,
+                    responded: true,
+                    approvalDecision: approval
+                      ? approval.approve
+                        ? "approved"
+                        : "rejected"
+                      : undefined,
+                  }
                 : message,
             ),
           );
@@ -306,7 +329,7 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
         if (generationRef.current !== generation) return false;
         closeSSE();
         const detail = messageFromError(sendError);
-        retryRef.current = { content: trimmed, idempotencyKey };
+        retryRef.current = { content: trimmed, idempotencyKey, approval };
         setError(detail);
         setCanRetry(true);
         setStatus({ step: "error", label: "送信エラー" });
@@ -328,10 +351,36 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
     [performSend],
   );
 
+  const approve = useCallback(
+    (approved: boolean) => {
+      const request = hitlRequestRef.current;
+      const requestId = request?.data.approval_request_id;
+      if (
+        request?.type !== "submit_confirmation" ||
+        typeof requestId !== "string" ||
+        !requestId
+      ) {
+        return Promise.resolve(false);
+      }
+      return performSend(
+        approved ? "MCPツールの実行を承認しました" : "MCPツールの実行を拒否しました",
+        true,
+        undefined,
+        { requestId, approve: approved },
+      );
+    },
+    [performSend],
+  );
+
   const retry = useCallback(async (): Promise<boolean> => {
     const pending = retryRef.current;
     if (!pending) return false;
-    return performSend(pending.content, false, pending.idempotencyKey);
+    return performSend(
+      pending.content,
+      false,
+      pending.idempotencyKey,
+      pending.approval,
+    );
   }, [performSend]);
 
   return {
@@ -344,6 +393,7 @@ export function useChat(conversationOptions?: CreateConversationOptions) {
     error,
     canRetry,
     send,
+    approve,
     retry,
     reset,
   };

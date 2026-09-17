@@ -8,25 +8,10 @@ from tools import submit_travel_request as submission
 from tools.submit_travel_request import (
     APPLICATION_DATA_SCHEMA,
     _plan_hash,
-    _is_explicit_approval,
     _validate_arguments,
     _validate_direct_arguments,
     _validate_prepare_arguments,
 )
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "お願いします",
-        "はい、お願いします。",
-        "この内容でお願いします",
-        "問題ありません",
-        "大丈夫",
-    ],
-)
-def test_mcp_accepts_natural_explicit_approval(reply):
-    assert _is_explicit_approval(reply)
 
 
 def _day_trip_plan() -> dict:
@@ -44,7 +29,7 @@ def _day_trip_plan() -> dict:
                 "to": "東京駅",
                 "cost": 10000,
                 "fare_type": "指定席",
-                "source_url": "https://example.com/outbound",
+                "source_url": "https://ekitan.com/outbound",
                 "source_title": "往路運賃",
             },
             {
@@ -54,7 +39,7 @@ def _day_trip_plan() -> dict:
                 "to": "大阪駅",
                 "cost": 10000,
                 "fare_type": "指定席",
-                "source_url": "https://example.com/return",
+                "source_url": "https://ekitan.com/return",
                 "source_title": "復路運賃",
             },
         ],
@@ -102,6 +87,22 @@ def test_prompt_agent_prepare_requires_application_data():
     assert error == "application_data must be an object"
 
 
+def test_prepare_requires_exact_agent_scenario():
+    arguments = {
+        "application_text": "申請書",
+        "application_data": _day_trip_plan(),
+        "policy_result": "規程適合",
+    }
+
+    assert _validate_prepare_arguments(arguments) == "agent_scenario is required"
+
+    arguments["agent_scenario"] = "single_prompt"
+    assert (
+        _validate_prepare_arguments(arguments)
+        == "agent_scenario is not supported"
+    )
+
+
 def test_prepare_tool_exposes_strict_application_schema():
     assert APPLICATION_DATA_SCHEMA["additionalProperties"] is False
     assert APPLICATION_DATA_SCHEMA["properties"]["trip_type"]["enum"] == [
@@ -147,18 +148,39 @@ def test_prompt_agent_prepare_rejects_invalid_day_trip_hotel():
     assert error == "Day trips must not contain hotel details"
 
 
+def test_prompt_agent_prepare_rejects_unapproved_fare_source():
+    plan = _day_trip_plan()
+    plan["transportation_legs"][0]["source_url"] = "https://example.com/fare"
+
+    error = _validate_prepare_arguments(
+        {
+            "application_text": "申請書",
+            "agent_scenario": "single_prompt_agent",
+            "application_data": plan,
+            "policy_result": "規程適合",
+        }
+    )
+
+    assert (
+        error
+        == "application_data.transportation_legs[0].source_url "
+        "must use an approved fare source"
+    )
+
+
 def test_prompt_agent_submission_requires_approval_id():
-    error = _validate_direct_arguments({"confirmation_text": "申請する"})
+    error = _validate_direct_arguments({})
     assert error == "approval_id is required"
 
 
-def test_prompt_agent_submission_requires_explicit_user_confirmation():
+def test_prompt_agent_submission_rejects_non_native_approval_fields():
     error = _validate_direct_arguments(
         {
             "approval_id": "approval-1",
+            "confirmation_text": "申請する",
         }
     )
-    assert error == "confirmation_text is required"
+    assert error == "Only approval_id is accepted"
 
 
 @pytest.mark.parametrize(
@@ -231,6 +253,7 @@ def test_prepare_and_submit_uses_conversation_owner(
             {
                 "application_text": "申請書",
                 "conversation_id": "conversation-1",
+                "agent_scenario": scenario,
                 "application_data": plan,
                 "policy_result": "規程適合",
             }
@@ -240,7 +263,6 @@ def test_prepare_and_submit_uses_conversation_owner(
         submission.submit_travel_request_with_approval(
             {
                 "approval_id": prepared["approval_id"],
-                "confirmation_text": "申請する",
             }
         )
     )
@@ -296,6 +318,7 @@ def test_prompt_agent_prepare_without_app_context_is_standalone(monkeypatch):
         submission.prepare_travel_request_submission(
             {
                 "application_text": "申請書",
+                "agent_scenario": "single_prompt_agent",
                 "application_data": _day_trip_plan(),
                 "policy_result": "規程適合",
             }
@@ -305,7 +328,6 @@ def test_prompt_agent_prepare_without_app_context_is_standalone(monkeypatch):
         submission.submit_travel_request_with_approval(
             {
                 "approval_id": prepared["approval_id"],
-                "confirmation_text": "申請する",
             }
         )
     )
@@ -368,7 +390,6 @@ def test_hosted_agent_prepare_without_app_context_uses_hosted_identity(
         submission.submit_travel_request_with_approval(
             {
                 "approval_id": prepared["approval_id"],
-                "confirmation_text": "申請する",
             }
         )
     )
@@ -376,51 +397,3 @@ def test_hosted_agent_prepare_without_app_context_uses_hosted_identity(
     assert result["success"] is True
     assert created[0]["user_id"] == "foundry-hosted-agent"
     assert created[0]["approval_mode"] == "hosted_agent_mcp"
-
-
-def test_mcp_cancels_fixed_application_from_raw_user_response(monkeypatch):
-    class Grants:
-        def __init__(self):
-            self.item = {
-                "id": "approval-1",
-                "status": "awaiting_confirmation",
-                "expires_at": "2999-01-01T00:00:00+00:00",
-                "_etag": "etag-1",
-            }
-
-        async def read_item(self, item, partition_key):
-            assert item == partition_key == "approval-1"
-            return copy.deepcopy(self.item)
-
-        async def replace_item(self, item, body, etag, match_condition):
-            assert item == "approval-1"
-            assert etag == "etag-1"
-            self.item = copy.deepcopy(body)
-
-    grants = Grants()
-    monkeypatch.setattr(
-        submission,
-        "get_approval_grant_container",
-        lambda: grants,
-    )
-
-    result = asyncio.run(
-        submission.submit_travel_request_with_approval(
-            {
-                "approval_id": "approval-1",
-                "confirmation_text": "キャンセル",
-            }
-        )
-    )
-
-    assert result == {
-        "success": True,
-        "submitted": False,
-        "cancelled": True,
-        "duplicate": False,
-        "request_id": "",
-        "submitted_at": "",
-        "message": "出張申請の送信をキャンセルしました。",
-    }
-    assert grants.item["status"] == "cancelled"
-    assert grants.item["confirmation_text"] == "キャンセル"

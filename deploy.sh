@@ -12,6 +12,7 @@ WEB_IQ_CONNECTION_NAME="${WEB_IQ_CONNECTION_NAME:-travel-web-iq}"
 WEB_IQ_MCP_ENDPOINT="${WEB_IQ_MCP_ENDPOINT:-https://api.microsoft.ai/v3/mcp}"
 CLARIFIER_AGENT_NAME="${CLARIFIER_AGENT_NAME:-travel-request-clarifier}"
 PLANNER_AGENT_NAME="${PLANNER_AGENT_NAME:-travel-request-planner}"
+PLAN_REVIEWER_AGENT_NAME="${PLAN_REVIEWER_AGENT_NAME:-travel-request-plan-reviewer}"
 POLICY_AGENT_NAME="${POLICY_AGENT_NAME:-travel-request-policy-narrator}"
 APPROVAL_AGENT_NAME="${APPROVAL_AGENT_NAME:-travel-request-approval-writer}"
 MODEL_DEPLOYMENT_NAME="${MODEL_DEPLOYMENT_NAME:-gpt-5.6-luna}"
@@ -130,22 +131,34 @@ az ad app update \
   --output none
 
 echo "Deploying Azure infrastructure to ${LOCATION}..."
-az group create \
-  --name "$RESOURCE_GROUP" \
-  --location "$LOCATION" \
-  --output none
-DEPLOY_OUTPUT=$(az deployment group create \
-  --name "travel-agent-$(date +%Y%m%d%H%M%S)" \
-  --resource-group "$RESOURCE_GROUP" \
-  --template-file infra/main.bicep \
-  --parameters \
-    location="$LOCATION" \
-    modelName="$MODEL_DEPLOYMENT_NAME" \
-    modelCapacity="$MODEL_CAPACITY" \
-    mcpEntraClientId="$MCP_ENTRA_CLIENT_ID" \
-    webEntraClientId="$WEB_ENTRA_CLIENT_ID" \
-  --query properties.outputs \
-  --output json)
+if [[ "${SKIP_INFRA_DEPLOYMENT:-false}" == "true" ]]; then
+  if [[ -z "${BASE_DEPLOYMENT_NAME:-}" ]]; then
+    echo "BASE_DEPLOYMENT_NAME is required when infrastructure is skipped." >&2
+    exit 1
+  fi
+  DEPLOY_OUTPUT=$(az deployment group show \
+    --name "$BASE_DEPLOYMENT_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query properties.outputs \
+    --output json)
+else
+  az group create \
+    --name "$RESOURCE_GROUP" \
+    --location "$LOCATION" \
+    --output none
+  DEPLOY_OUTPUT=$(az deployment group create \
+    --name "travel-agent-$(date +%Y%m%d%H%M%S)" \
+    --resource-group "$RESOURCE_GROUP" \
+    --template-file infra/main.bicep \
+    --parameters \
+      location="$LOCATION" \
+      modelName="$MODEL_DEPLOYMENT_NAME" \
+      modelCapacity="$MODEL_CAPACITY" \
+      mcpEntraClientId="$MCP_ENTRA_CLIENT_ID" \
+      webEntraClientId="$WEB_ENTRA_CLIENT_ID" \
+    --query properties.outputs \
+    --output json)
+fi
 
 ACCOUNT_NAME=$(jq -r '.accountName.value' <<<"$DEPLOY_OUTPUT")
 PROJECT_NAME=$(jq -r '.projectName.value' <<<"$DEPLOY_OUTPUT")
@@ -289,6 +302,7 @@ resolve_prompt_agent_version() {
 
 CLARIFIER_AGENT_VERSION=$(resolve_prompt_agent_version "$CLARIFIER_AGENT_NAME")
 PLANNER_AGENT_VERSION=$(resolve_prompt_agent_version "$PLANNER_AGENT_NAME")
+PLAN_REVIEWER_AGENT_VERSION=$(resolve_prompt_agent_version "$PLAN_REVIEWER_AGENT_NAME")
 POLICY_AGENT_VERSION=$(resolve_prompt_agent_version "$POLICY_AGENT_NAME")
 APPROVAL_AGENT_VERSION=$(resolve_prompt_agent_version "$APPROVAL_AGENT_NAME")
 SINGLE_PROMPT_AGENT_VERSION=$(resolve_prompt_agent_version "$SINGLE_PROMPT_AGENT_NAME")
@@ -351,11 +365,14 @@ azd env set CLARIFIER_AGENT_NAME "$CLARIFIER_AGENT_NAME"
 azd env set CLARIFIER_AGENT_VERSION "$CLARIFIER_AGENT_VERSION"
 azd env set PLANNER_AGENT_NAME "$PLANNER_AGENT_NAME"
 azd env set PLANNER_AGENT_VERSION "$PLANNER_AGENT_VERSION"
+azd env set PLAN_REVIEWER_AGENT_NAME "$PLAN_REVIEWER_AGENT_NAME"
+azd env set PLAN_REVIEWER_AGENT_VERSION "$PLAN_REVIEWER_AGENT_VERSION"
 azd env set POLICY_AGENT_NAME "$POLICY_AGENT_NAME"
 azd env set POLICY_AGENT_VERSION "$POLICY_AGENT_VERSION"
 azd env set APPROVAL_AGENT_NAME "$APPROVAL_AGENT_NAME"
 azd env set APPROVAL_AGENT_VERSION "$APPROVAL_AGENT_VERSION"
 azd env set MCP_TOOL_ENDPOINT "$MCP_TOOL_ENDPOINT"
+azd env set MCP_CONNECTION_ID "$MCP_CONNECTION_ID"
 azd env set MCP_FUNCTION_APP_CLIENT_ID "$MCP_ENTRA_CLIENT_ID"
 azd env set COSMOS_ENDPOINT "$COSMOS_ENDPOINT"
 azd env set COSMOS_DATABASE_NAME "$COSMOS_DATABASE"
@@ -515,6 +532,8 @@ printf '%s\n' \
   "CLARIFIER_AGENT_VERSION=${CLARIFIER_AGENT_VERSION}" \
   "PLANNER_AGENT_NAME=${PLANNER_AGENT_NAME}" \
   "PLANNER_AGENT_VERSION=${PLANNER_AGENT_VERSION}" \
+  "PLAN_REVIEWER_AGENT_NAME=${PLAN_REVIEWER_AGENT_NAME}" \
+  "PLAN_REVIEWER_AGENT_VERSION=${PLAN_REVIEWER_AGENT_VERSION}" \
   "POLICY_AGENT_NAME=${POLICY_AGENT_NAME}" \
   "POLICY_AGENT_VERSION=${POLICY_AGENT_VERSION}" \
   "APPROVAL_AGENT_NAME=${APPROVAL_AGENT_NAME}" \
@@ -523,6 +542,7 @@ printf '%s\n' \
   "COSMOS_DATABASE_NAME=${COSMOS_DATABASE}" \
   "COSMOS_CHECKPOINT_CONTAINER=workflow-checkpoints" \
   "MCP_TOOL_ENDPOINT=${MCP_TOOL_ENDPOINT}" \
+  "MCP_CONNECTION_ID=${MCP_CONNECTION_ID}" \
   "MCP_FUNCTION_APP_CLIENT_ID=${MCP_ENTRA_CLIENT_ID}" \
   > hosted-agent/.env
 

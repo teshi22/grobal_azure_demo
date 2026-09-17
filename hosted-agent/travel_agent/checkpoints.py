@@ -17,6 +17,20 @@ from azure.identity.aio import DefaultAzureCredential
 
 from .settings import settings
 
+_ALLOWED_CHECKPOINT_TYPES = (
+    "travel_agent.models:ClarificationResult",
+    "travel_agent.models:TravelPlan",
+    "travel_agent.models:PolicyOutcome",
+    "travel_agent.models:ApprovalDocument",
+    "travel_agent.models:ClarificationRequest",
+    "travel_agent.models:ClarificationResponse",
+    "travel_agent.models:RequestConfirmationRequest",
+    "travel_agent.models:RequestConfirmationResponse",
+    "travel_agent.models:PlanReviewRequest",
+    "travel_agent.models:PlanReviewResponse",
+    "travel_agent.models:SubmissionApprovalRequest",
+)
+
 
 class ScopedCheckpointStorage:
     """Isolate a shared Cosmos checkpoint container by host context ID."""
@@ -103,19 +117,6 @@ class CosmosCheckpointStoreProvider(
                 credential=DefaultAzureCredential(),
                 database_name=settings.cosmos_database_name,
                 container_name=settings.cosmos_checkpoint_container,
-                allowed_checkpoint_types=[
-                    "travel_agent.models:ClarificationResult",
-                    "travel_agent.models:TravelPlan",
-                    "travel_agent.models:PolicyOutcome",
-                    "travel_agent.models:ApprovalDocument",
-                    "travel_agent.models:ClarificationRequest",
-                    "travel_agent.models:ClarificationResponse",
-                    "travel_agent.models:RequestConfirmationRequest",
-                    "travel_agent.models:RequestConfirmationResponse",
-                    "travel_agent.models:PlanReviewRequest",
-                    "travel_agent.models:PlanReviewResponse",
-                    "travel_agent.models:SubmissionConfirmationRequest",
-                    "travel_agent.models:SubmissionConfirmationResponse",
-                ],
+                allowed_checkpoint_types=list(_ALLOWED_CHECKPOINT_TYPES),
             )
         return ScopedCheckpointStorage(self._cosmos_storage, context_id)

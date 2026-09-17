@@ -13,10 +13,6 @@ from agent_framework import Executor, Message, handler, response_handler
 from .agents import TravelAgents
 from .date_resolver import resolve_schedule
 from .evaluation import EvaluationMode
-from .mcp_client import (
-    prepare_travel_request_submission,
-    submit_travel_request_with_approval,
-)
 from .models import (
     ApprovalDocument,
     ClarificationRequest,
@@ -28,12 +24,12 @@ from .models import (
     PolicyOutcome,
     RequestConfirmationRequest,
     RequestConfirmationResponse,
-    SubmissionConfirmationRequest,
-    SubmissionConfirmationResponse,
+    SubmissionApprovalRequest,
     TravelPlan,
     fare_evidence_errors,
 )
 from .policy import evaluate_policy
+from .submission_agent import PendingMCPApproval
 
 _REQUIRED_FIELDS = ("departure", "destination", "schedule", "purpose")
 _FIELD_LABELS = {
@@ -389,6 +385,7 @@ class ApprovalDocumentStep(Executor):
     ) -> None:
         super().__init__(id="approval_document")
         self._agent = agents.approval
+        self._submission = agents.submission
         self._evaluation = evaluation
 
     @handler(
@@ -431,26 +428,35 @@ class ApprovalDocumentStep(Executor):
         ).strip()
         if conversation_id:
             prepare_arguments["conversation_id"] = conversation_id
-        prepared = await prepare_travel_request_submission(
+        prepared = await self._submission.prepare(
             prepare_arguments
         )
         document.approval_id = str(prepared["approval_id"])
         await ctx.send_message(document)
 
 
-class SubmissionConfirmationStep(Executor):
-    def __init__(self) -> None:
-        super().__init__(id="submission_confirmation")
+class SubmissionApprovalStep(Executor):
+    def __init__(self, agents: TravelAgents) -> None:
+        super().__init__(id="submission_approval")
+        self._submission = agents.submission
 
-    @handler(input=ApprovalDocument, output=dict)
+    @handler(input=ApprovalDocument, workflow_output=str)
     async def request(self, document, ctx) -> None:
         ctx.set_state("approval_document", document.model_dump())
+        pending = await self._submission.request_submission(
+            document.approval_id
+        )
         await ctx.request_info(
-            request_data=SubmissionConfirmationRequest(
+            request_data=SubmissionApprovalRequest(
                 approval_id=document.approval_id,
                 application_text=document.application_text,
                 plan_json=document.plan_json,
                 policy_narrative=document.policy_narrative,
+                approval_request_id=pending.request_id,
+                tool_name=pending.tool_name,
+                tool_arguments=pending.arguments,
+                server_label=pending.server_label,
+                agent_session=pending.session,
                 message="旅費規程に適合しました。申請を送信しますか？",
                 data={
                     "application_text": document.application_text,
@@ -458,38 +464,30 @@ class SubmissionConfirmationStep(Executor):
                     "policy_result": document.policy_narrative,
                 },
             ),
-            response_type=str,
+            response_type=bool,
         )
 
     @response_handler(
-        request=SubmissionConfirmationRequest,
-        response=str,
-        output=dict,
+        request=SubmissionApprovalRequest,
+        response=bool,
         workflow_output=str,
     )
     async def respond(
         self,
-        original: SubmissionConfirmationRequest,
-        response: str,
+        original: SubmissionApprovalRequest,
+        response: bool,
         ctx,
     ) -> None:
-        parsed = SubmissionConfirmationResponse.convert_from_payload(response)
-        await ctx.send_message(
-            {
-                "approval_id": original.approval_id,
-                "confirmation_text": parsed.confirmation_text,
-            },
-            target_id="submit_travel_request",
+        result = await self._submission.resolve_submission(
+            PendingMCPApproval(
+                request_id=original.approval_request_id,
+                tool_name=original.tool_name,
+                arguments=original.tool_arguments,
+                server_label=original.server_label,
+                session=original.agent_session,
+            ),
+            response,
         )
-
-
-class SubmitTravelRequestStep(Executor):
-    def __init__(self) -> None:
-        super().__init__(id="submit_travel_request")
-
-    @handler(input=dict, workflow_output=str)
-    async def run(self, submission, ctx) -> None:
-        result = await submit_travel_request_with_approval(submission)
         if not result.get("submitted", False):
             await ctx.yield_output(str(result["message"]))
             return

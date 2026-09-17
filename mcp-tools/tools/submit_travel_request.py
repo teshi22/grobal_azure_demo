@@ -5,10 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
-import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from azure.core import MatchConditions
 from azure.cosmos.exceptions import (
@@ -26,35 +25,6 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_AGENT_FALLBACK_USER = "foundry-prompt-agent"
 _HOSTED_AGENT_FALLBACK_USER = "foundry-hosted-agent"
-_EXPLICIT_APPROVALS = frozenset(
-    {
-        "ok",
-        "yes",
-        "y",
-        "はい",
-        "はいお願いします",
-        "確定",
-        "進めて",
-        "承認",
-        "承認します",
-        "大丈夫",
-        "申請",
-        "申請する",
-        "申請します",
-        "申請してください",
-        "お願いします",
-        "お願いいたします",
-        "お願い致します",
-        "これでお願いします",
-        "それでお願いします",
-        "この内容でお願いします",
-        "その内容でお願いします",
-        "進めてください",
-        "問題ありません",
-        "問題ないです",
-        "大丈夫です",
-    }
-)
 _APPLICATION_STRING_FIELDS = (
     "departure",
     "destination",
@@ -71,6 +41,22 @@ _LEG_STRING_FIELDS = (
     "fare_type",
     "source_url",
     "source_title",
+)
+_ALLOWED_FARE_DOMAINS = (
+    "jreast.co.jp",
+    "jr-central.co.jp",
+    "jr-odekake.net",
+    "jrkyushu.co.jp",
+    "jrhokkaido.co.jp",
+    "jr-shikoku.co.jp",
+    "smart-ex.jp",
+    "eki-net.com",
+    "tokyometro.jp",
+    "kotsu.metro.tokyo.jp",
+    "ekitan.com",
+    "transit.yahoo.co.jp",
+    "jorudan.co.jp",
+    "navitime.co.jp",
 )
 
 TRANSPORTATION_LEG_SCHEMA = {
@@ -187,7 +173,9 @@ def _validate_prepare_arguments(arguments: dict) -> str | None:
     ):
         return "conversation_id must be a non-empty string when provided"
     agent_scenario = arguments.get("agent_scenario")
-    if agent_scenario is not None and agent_scenario not in {
+    if not isinstance(agent_scenario, str) or not agent_scenario.strip():
+        return "agent_scenario is required"
+    if agent_scenario not in {
         "single_prompt_agent",
         "agent_framework_workflow",
     }:
@@ -219,6 +207,11 @@ def _validate_application_data(application_data: dict) -> str | None:
                     f"application_data.transportation_legs[{index}].{key} "
                     "is required"
                 )
+        if not _is_allowed_fare_source(leg["source_url"]):
+            return (
+                f"application_data.transportation_legs[{index}].source_url "
+                "must use an approved fare source"
+            )
         cost = leg.get("cost")
         if not isinstance(cost, int) or isinstance(cost, bool) or cost < 0:
             return (
@@ -282,25 +275,30 @@ def _validate_application_data(application_data: dict) -> str | None:
     return None
 
 
+def _is_allowed_fare_source(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.lower().removeprefix("www.")
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in _ALLOWED_FARE_DOMAINS
+    )
+
+
 def _validate_direct_arguments(arguments: dict) -> str | None:
     if (
         not isinstance(arguments.get("approval_id"), str)
         or not arguments["approval_id"].strip()
     ):
         return "approval_id is required"
-    confirmation_text = arguments.get("confirmation_text")
-    if (
-        not isinstance(confirmation_text, str)
-        or not confirmation_text.strip()
-    ):
-        return "confirmation_text is required"
+    unexpected = set(arguments) - {"approval_id"}
+    if unexpected:
+        return "Only approval_id is accepted"
     return None
-
-
-def _is_explicit_approval(confirmation_text: str) -> bool:
-    normalized = unicodedata.normalize("NFKC", confirmation_text).lower()
-    normalized = re.sub(r"[\s、。,.!！?？]+", "", normalized)
-    return normalized in _EXPLICIT_APPROVALS
 
 
 def _plan_hash(application_data: dict) -> str:
@@ -351,6 +349,8 @@ async def submit_travel_request(arguments: dict) -> dict:
     if existing:
         return {
             "success": True,
+            "submitted": True,
+            "cancelled": False,
             "duplicate": True,
             "request_id": request_id,
             "submitted_at": existing["submitted_at"],
@@ -424,7 +424,8 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
     conversation_id = str(arguments.get("conversation_id") or "").strip()
     user_id = _PROMPT_AGENT_FALLBACK_USER
     approval_mode = "prompt_agent_mcp"
-    if arguments.get("agent_scenario") == "agent_framework_workflow":
+    agent_scenario = str(arguments["agent_scenario"])
+    if agent_scenario == "agent_framework_workflow":
         user_id = _HOSTED_AGENT_FALLBACK_USER
         approval_mode = "hosted_agent_mcp"
     if conversation_id:
@@ -438,11 +439,8 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
             return _failure("Conversation was not found")
 
         scenario = str(conversation.get("scenario") or "")
-        if scenario not in {
-            "single_prompt_agent",
-            "agent_framework_workflow",
-        }:
-            return _failure("Conversation scenario does not support MCP approval")
+        if scenario != agent_scenario:
+            return _failure("Conversation scenario does not match the caller")
         user_id = str(conversation.get("user_id") or "").strip()
         if not user_id:
             return _failure("Conversation has no owner")
@@ -481,7 +479,7 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
 
 
 async def submit_travel_request_with_approval(arguments: dict) -> dict:
-    """Consume an MCP-managed approval after explicit user confirmation."""
+    """Consume a grant after the Foundry runtime approves this MCP call."""
     validation_error = _validate_direct_arguments(arguments)
     if validation_error:
         return _failure(validation_error)
@@ -524,37 +522,6 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
     if expires_at <= datetime.now(timezone.utc):
         return _failure("Approval has expired")
 
-    if not _is_explicit_approval(arguments["confirmation_text"]):
-        cancelled_at = datetime.now(timezone.utc).isoformat()
-        grant["status"] = "cancelled"
-        grant["cancelled_at"] = cancelled_at
-        grant["confirmation_text"] = arguments["confirmation_text"]
-        try:
-            await grants.replace_item(
-                item=approval_id,
-                body=grant,
-                etag=grant.get("_etag"),
-                match_condition=MatchConditions.IfNotModified,
-            )
-        except CosmosHttpResponseError as exc:
-            if exc.status_code != 412:
-                raise
-            current = await grants.read_item(
-                item=approval_id,
-                partition_key=approval_id,
-            )
-            if current.get("status") != "cancelled":
-                return _failure("Approval state changed before cancellation")
-        return {
-            "success": True,
-            "submitted": False,
-            "cancelled": True,
-            "duplicate": False,
-            "request_id": "",
-            "submitted_at": "",
-            "message": "出張申請の送信をキャンセルしました。",
-        }
-
     idempotency_key = str(grant["idempotency_key"])
     request_id = (
         f"TR-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:12].upper()}"
@@ -570,6 +537,8 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
     if existing:
         return {
             "success": True,
+            "submitted": True,
+            "cancelled": False,
             "duplicate": True,
             "request_id": request_id,
             "submitted_at": existing["submitted_at"],

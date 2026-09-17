@@ -248,8 +248,9 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
                     key={message.id}
                     data={hitlData.data}
                     disabled={disabled}
-                    onConfirm={() => void sendContent("OK")}
-                    onCancel={() => void sendContent("キャンセル")}
+                    decision={message.approvalDecision}
+                    onConfirm={() => void chat.approve(true)}
+                    onCancel={() => void chat.approve(false)}
                   />
                 );
               }

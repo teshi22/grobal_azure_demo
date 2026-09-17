@@ -5,6 +5,7 @@ import { useState } from "react";
 interface Props {
   data: Record<string, unknown>;
   disabled?: boolean;
+  decision?: "approved" | "rejected";
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -12,6 +13,7 @@ interface Props {
 export function SubmitConfirmCard({
   data,
   disabled,
+  decision,
   onConfirm,
   onCancel,
 }: Props) {
@@ -51,7 +53,13 @@ export function SubmitConfirmCard({
           disabled={disabled || !checked}
           className="chat-primary-button"
         >
-          {disabled ? "✓ 申請済み" : "申請する"}
+          {disabled
+            ? decision === "approved"
+              ? "実行を承認しました"
+              : decision === "rejected"
+                ? "実行を拒否しました"
+                : "回答済み"
+            : "申請する"}
         </button>
         {!disabled && (
           <button

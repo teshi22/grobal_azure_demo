@@ -149,6 +149,8 @@ class ConversationStore:
         message_id: str,
         user_id: str,
         content: str,
+        approval_request_id: str | None = None,
+        approve: bool | None = None,
     ) -> bool:
         item = await self.get(conversation_id)
         if not item:
@@ -163,6 +165,8 @@ class ConversationStore:
             "message_id": message_id,
             "user_id": user_id,
             "content": content,
+            "approval_request_id": approval_request_id,
+            "approve": approve,
             "idempotency_key": idempotency_key,
         }
         item["processing_lease_until"] = None
@@ -185,7 +189,7 @@ class ConversationStore:
         conversation_id: str,
         *,
         lease_minutes: int = 10,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         item = await self.get(conversation_id)
         if not item or item.get("status") != "processing":
             return None
@@ -224,6 +228,10 @@ class ConversationStore:
             "message_id": str(active_message["message_id"]),
             "user_id": str(active_message["user_id"]),
             "content": str(active_message["content"]),
+            "approval_request_id": active_message.get(
+                "approval_request_id"
+            ),
+            "approve": active_message.get("approve"),
             "idempotency_key": str(active_message["idempotency_key"]),
         }
 

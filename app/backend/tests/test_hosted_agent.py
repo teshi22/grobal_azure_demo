@@ -141,6 +141,202 @@ def test_extracts_nested_chat_output_text():
     )
 
 
+def test_extracts_structured_display_from_workflow_approval_prompt():
+    message, data = hosted_agent._extract_hitl_display(
+        "申請を送信しますか？\n\n```json\n"
+        '{"application_text":"申請書","policy_result":"規程適合"}'
+        "\n```"
+    )
+
+    assert message == "申請を送信しますか？"
+    assert data == {
+        "application_text": "申請書",
+        "policy_result": "規程適合",
+    }
+
+
+def test_hosted_approval_resume_sends_native_mcp_response(monkeypatch):
+    responses = _CaptureResponses()
+    monkeypatch.setattr(
+        foundry,
+        "get_hosted_responses_client",
+        lambda: responses,
+    )
+
+    foundry.invoke_hosted_agent(
+        conversation_id="conversation-1",
+        user_id="user-1",
+        previous_response_id="response-1",
+        approval_request_id="approval-request-1",
+        approve=True,
+    )
+
+    assert responses.kwargs["input"] == [
+        {
+            "type": "mcp_approval_response",
+            "approval_request_id": "approval-request-1",
+            "approve": True,
+        }
+    ]
+    assert responses.kwargs["previous_response_id"] == "response-1"
+
+
+def test_process_message_persists_native_mcp_approval_request(monkeypatch):
+    updates = []
+    emitted = []
+
+    class Store:
+        async def get_owned(self, conversation_id, user_id):
+            return {
+                "scenario": "agent_framework_workflow",
+                "foundry_response_id": "response-1",
+                "pending_request": None,
+            }
+
+        async def update(self, conversation_id, **changes):
+            updates.append(changes)
+
+    class Events:
+        async def append(self, conversation_id, event_type, data, **kwargs):
+            emitted.append((event_type, data))
+
+    class Response:
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-2",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "mcp_approval_request",
+                        "id": "approval-request-1",
+                        "name": "submit_travel_request_with_approval",
+                        "server_label": "travel-request-submission",
+                        "arguments": '{"approval_id":"grant-1"}',
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
+    monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(
+        hosted_agent,
+        "invoke_hosted_agent",
+        lambda **kwargs: Response(),
+    )
+
+    asyncio.run(
+        hosted_agent.process_message(
+            conversation_id="conversation-1",
+            user_id="user-1",
+            content="お願いします",
+            message_id="message-1",
+            idempotency_key="key-1",
+        )
+    )
+
+    assert updates == [
+        {
+            "status": "awaiting_input",
+            "foundry_response_id": "response-2",
+            "pending_request": {
+                "type": "mcp_approval",
+                "approval_request_id": "approval-request-1",
+            },
+            "active_message": None,
+            "processing_lease_until": None,
+        }
+    ]
+    assert emitted == [
+        (
+            "hitl_request",
+            {
+                "type": "submit_confirmation",
+                "message": "MCPツールの実行を承認しますか？",
+                "data": {
+                    "approval_request_id": "approval-request-1",
+                    "tool_name": "submit_travel_request_with_approval",
+                    "server_label": "travel-request-submission",
+                    "arguments": {"approval_id": "grant-1"},
+                    "application_text": "",
+                },
+            },
+        )
+    ]
+
+
+def test_process_message_resumes_matching_native_mcp_approval(monkeypatch):
+    invocations = []
+    emitted = []
+
+    class Store:
+        async def get_owned(self, conversation_id, user_id):
+            return {
+                "scenario": "agent_framework_workflow",
+                "foundry_response_id": "response-1",
+                "pending_request": {
+                    "type": "mcp_approval",
+                    "approval_request_id": "approval-request-1",
+                },
+            }
+
+        async def update(self, conversation_id, **changes):
+            assert changes["status"] == "ready"
+            assert changes["pending_request"] is None
+
+    class Events:
+        async def append(self, conversation_id, event_type, data, **kwargs):
+            emitted.append((event_type, data))
+
+    class Response:
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-2",
+                "status": "completed",
+                "output_text": "出張申請を登録しました。",
+                "output": [],
+            }
+
+    def fake_hosted(**kwargs):
+        invocations.append(kwargs)
+        return Response()
+
+    monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
+    monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(hosted_agent, "invoke_hosted_agent", fake_hosted)
+
+    asyncio.run(
+        hosted_agent.process_message(
+            conversation_id="conversation-1",
+            user_id="user-1",
+            content="",
+            message_id="message-1",
+            idempotency_key="key-1",
+            approval_request_id="approval-request-1",
+            approve=True,
+        )
+    )
+
+    assert invocations == [
+        {
+            "conversation_id": "conversation-1",
+            "user_id": "user-1",
+            "message": None,
+            "previous_response_id": "response-1",
+            "approval_request_id": "approval-request-1",
+            "approve": True,
+        }
+    ]
+    assert emitted == [
+        (
+            "agent_response",
+            {
+                "step": "agent_framework_workflow",
+                "content": "出張申請を登録しました。",
+            },
+        )
+    ]
+
+
 def test_process_message_forwards_plain_user_input_without_callbacks(
     monkeypatch,
 ):
@@ -203,6 +399,8 @@ def test_process_message_forwards_plain_user_input_without_callbacks(
             "user_id": "user-1",
             "message": "キャンセル",
             "previous_response_id": "response-1",
+            "approval_request_id": None,
+            "approve": None,
         }
     ]
     assert emitted == [
@@ -303,7 +501,14 @@ def test_processes_claimed_durable_message(monkeypatch):
 
     asyncio.run(hosted_agent.process_queued_message("conversation-1"))
 
-    assert processed == [{"conversation_id": "conversation-1", **message}]
+    assert processed == [
+        {
+            "conversation_id": "conversation-1",
+            **message,
+            "approval_request_id": None,
+            "approve": None,
+        }
+    ]
 
 
 def test_process_message_ignores_legacy_single_prompt_mode_fields(
@@ -380,6 +585,8 @@ def test_process_message_ignores_legacy_single_prompt_mode_fields(
             "conversation_id": "conversation-1",
             "message": "大阪へ出張",
             "previous_response_id": None,
+            "approval_request_id": None,
+            "approve": None,
         }
     ]
 
@@ -443,6 +650,8 @@ def test_single_prompt_clears_legacy_pending_request(monkeypatch):
             "conversation_id": "conversation-1",
             "message": "はい",
             "previous_response_id": "response-1",
+            "approval_request_id": None,
+            "approve": None,
         }
     ]
     assert emitted == [

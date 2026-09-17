@@ -61,12 +61,15 @@ async def send_message(
         return MessageResponse(message_id=existing["message_id"], status="duplicate")
 
     message_id = str(uuid.uuid4())
+    content = body.display_content
     if not await conversations.claim_message(
         conversation_id,
         idempotency_key,
         message_id=message_id,
         user_id=current_user["sub"],
-        content=body.content,
+        content=content,
+        approval_request_id=body.approval_request_id,
+        approve=body.approve,
     ):
         latest = await conversations.get(conversation_id)
         if latest and latest.get("last_idempotency_key") == idempotency_key:
@@ -85,7 +88,7 @@ async def send_message(
     await events.append(
         conversation_id,
         "user_message",
-        {"content": body.content},
+        {"content": content},
         message_id=message_id,
         idempotency_key=idempotency_key,
     )

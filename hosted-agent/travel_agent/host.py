@@ -10,7 +10,7 @@ from .agents import create_agents
 from .checkpoints import CosmosCheckpointStoreProvider
 from .settings import settings
 from .workflow import build_workflow
-from .workflow_agent import ChatOnlyWorkflowAgent
+from .workflow_agent import MCPApprovalWorkflowAgent
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -32,7 +32,7 @@ def create_server() -> ResponsesHostServer:
         credential=credential,
         config=settings,
     )
-    workflow_agent = ChatOnlyWorkflowAgent(
+    workflow_agent = MCPApprovalWorkflowAgent(
         build_workflow(agents),
         name="travel-request-workflow"
     )

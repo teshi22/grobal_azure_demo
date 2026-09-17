@@ -8,6 +8,8 @@ from typing import Any
 
 from azure.ai.projects.models import (
     MCPTool,
+    MCPToolFilter,
+    MCPToolRequireApproval,
     PromptAgentDefinition,
     PromptAgentDefinitionTextOptions,
     TextResponseFormatJsonSchema,
@@ -315,7 +317,14 @@ def build_submission_mcp_tool(
             "prepare_travel_request_submission",
             "submit_travel_request_with_approval",
         ],
-        require_approval="never",
+        require_approval=MCPToolRequireApproval(
+            always=MCPToolFilter(
+                tool_names=["submit_travel_request_with_approval"]
+            ),
+            never=MCPToolFilter(
+                tool_names=["prepare_travel_request_submission"]
+            ),
+        ),
     )
 
 

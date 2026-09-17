@@ -107,7 +107,14 @@ def test_single_agent_uses_web_iq_and_submission_mcp_tools():
             "prepare_travel_request_submission",
             "submit_travel_request_with_approval",
         ],
-        "require_approval": "never",
+        "require_approval": {
+            "always": {
+                "tool_names": ["submit_travel_request_with_approval"],
+            },
+            "never": {
+                "tool_names": ["prepare_travel_request_submission"],
+            },
+        },
         "type": "mcp",
     }
     assert tools_by_label["travel-web-iq"] == {
@@ -161,9 +168,12 @@ def test_single_agent_prompt_enforces_conversation_and_tool_order():
     assert "`travel-web-iq` MCPの`web`と`browse`" in instructions
     assert "出発時刻を指定していない場合は、往路を午前10時ごろ出発" in instructions
     assert "検索結果のスニペットだけで運賃を確定せず" in instructions
+    assert "許可リスト外のサイトは検索候補や参考情報に現れても" in instructions
     assert "旅程の明示的な承認を得た後だけ" in instructions
+    assert "`agent_scenario`: 必ず文字列`single_prompt_agent`" in instructions
     assert "申請書や旅程をsubmitへ渡したり、書き換えたりしません" in instructions
-    assert "`confirmation_text`には、利用者の回答を要約・修正せず" in instructions
+    assert "利用者の回答はツール引数へ渡しません" in instructions
+    assert "FoundryのネイティブMCP承認が必須" in instructions
     assert instructions.index("## 3. 申請内容を固定") < instructions.index(
         "## 4. 承認済み申請を登録"
     )

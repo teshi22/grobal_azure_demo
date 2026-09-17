@@ -39,6 +39,8 @@ async def _test_local_conversation_store_claims_and_updates_messages():
         "user_id": "user-1",
         "content": "大阪へ出張したい",
         "idempotency_key": "key-1",
+        "approval_request_id": None,
+        "approve": None,
     }
     await store.update(
         "conversation-1",

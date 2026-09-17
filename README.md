@@ -2,7 +2,7 @@
 
 自然言語で受け付けた出張依頼を、情報確認、旅程検索、旅費規程チェック、申請書作成、送信まで進めるWebアプリケーションです。通常の対話画面に加え、Agent Frameworkワークフローと単一Prompt Agentの両方を、利用者確認を含む独立した会話として試せる画面を備えています。バッチ評価は詳細検証用の別画面として残しています。
 
-Agent Frameworkシナリオは、**Microsoft Agent Frameworkで定義した1つのワークフロー**としてMicrosoft Foundry Hosted Agent上で実行します。依頼整理、旅程作成、規程説明、申請案作成は、versionを固定した4つのFoundry Prompt Agentが担当します。Single Prompt Agentシナリオでは、1つのPrompt Agentが通常の会話ターンだけで確認、修正、最終承認、MCP申請まで管理します。Azure Container Apps上のFastAPIは、認証、会話所有権、Responses API呼び出し、callbackの透過中継、SSE転送だけを担当し、どちらのシナリオでも業務フローや承認可否を解釈しません。
+Agent Frameworkシナリオは、**Microsoft Agent Frameworkで定義した1つのワークフロー**としてMicrosoft Foundry Hosted Agent上で実行します。依頼整理、旅程作成、旅程確認、規程説明、申請案作成は、versionを固定した5つのFoundry Prompt Agentが担当します。Single Prompt Agentシナリオでは、1つのPrompt Agentが通常の会話ターンだけで確認、修正、最終承認、MCP申請まで管理します。Azure Container Apps上のFastAPIは、認証、会話所有権、Responses API呼び出し、callbackの透過中継、SSE転送だけを担当し、どちらのシナリオでも業務フローや承認可否を解釈しません。
 
 初めて触る場合は「構成」「処理の流れ」「Azure へデプロイする」まで読んでください。環境変数、テスト、運用上の注意は必要なときに参照できます。
 
@@ -24,6 +24,7 @@ flowchart LR
             Planner["Travel Planner<br/>Web Search"]
             Policy["Policy Checker"]
             Writer["Approval Writer"]
+            Submitter["MCP Submission Agent<br/>Foundry Hosted MCP"]
         end
         Single["Single Prompt Agent<br/>会話 + Web IQ + MCP"]
         Evaluation["Foundry Evaluation<br/>同一Dataset・同一rubric"]
@@ -45,13 +46,14 @@ flowchart LR
     Host --> AF
     Clarifier & Planner & Policy & Writer -->|"Prompt Agent"| Model
     Planner -->|"Web Search"| Model
+    Writer --> Submitter
+    Submitter -->|"prepare / submit"| MCP
     BFF --> Evaluation
     Evaluation --> Host
     Evaluation --> Single
     Single --> Model
     Single -->|"経路・運賃調査"| WebIQ
-    Single -->|"明示承認後のtool call"| MCP
-    Writer --> MCP
+    Single -->|"prepare / submit"| MCP
     BFF --> Cosmos
     Host --> Cosmos
     MCP --> Cosmos
@@ -62,9 +64,9 @@ flowchart LR
 |---|---|---|
 | Frontend | Next.js 15、React 19 | 2シナリオの対話申請、申請一覧、比較評価 |
 | BFF | FastAPI | Entra ID認証、会話所有権、Responses APIとdurable SSEの通信中継、Datasetと評価runの管理 |
-| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 5つのPrompt AgentのオーケストレーションとHITL |
+| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 5つのPrompt Agentのオーケストレーション、HITL、Foundry Hosted MCPの直接実行 |
 | Prompt Agents | Foundry Agent Service | 専門処理5種と、確認、修正、最終承認、MCP実行を通常会話で管理する単一エージェントシナリオ |
-| MCP | Azure Functions | 両シナリオの申請内容固定、利用者回答による承認判定、承認済み申請の冪等な登録 |
+| MCP | Azure Functions | 両シナリオの申請内容固定、短命approvalの管理、Foundry承認後の冪等な登録 |
 | Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認grant、申請、評価ケースと結果 |
 | Observability | OpenTelemetry、Application Insights | BFF と Hosted Agent のトレース |
 | Infrastructure | Bicep、Azure Developer CLI | Japan East への一括デプロイと RBAC 設定 |
@@ -88,15 +90,15 @@ Prompt Agentは名前だけでなくversionも設定に保存します。プロ�
 | シナリオ | 実行内容 |
 |---|---|
 | Agent Framework workflow | Hosted Agent内のワークフローが処理順と会話状態を制御し、5つの専門Prompt Agentと決定論的な規程判定を組み合わせる |
-| Single Prompt Agent | 1つのPrompt Agentが通常会話だけで依頼整理、Web IQによる経路・運賃調査、規程判断、申請案作成、確認、修正、最終承認を管理し、承認後にMCPを直接実行する |
+| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web IQによる経路・運賃調査、規程判断、申請案作成、確認、修正を管理し、Foundry Hosted MCPを直接実行する |
 
 両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正、申請書案の最終確認を画面内で行います。会話はシナリオごとに独立しているため、一方を操作しても他方の状態は変わりません。
 
-両シナリオとも、AgentがMCP `prepare_travel_request_submission`で申請内容を固定してから最終確認へ進みます。最終回答は加工せず`confirmation_text`として`submit_travel_request_with_approval`へ渡し、MCPが明示承認かキャンセルかを判定します。BFFは利用者のメッセージを通常のResponses API入力として送り、Agentのテキスト応答をそのまま中継します。
+両シナリオとも、AgentがFoundry Hosted MCP経由で`prepare_travel_request_submission`を実行し、申請内容を固定してから最終確認へ進みます。利用者が送信操作を開始すると、Agentは`submit_travel_request_with_approval`を要求しますが、Foundryはツールをまだ実行せず、ネイティブMCP承認要求を返します。承認画面で許可された場合だけ申請を登録し、拒否された場合は実行しません。「お願いします」などのテキストは送信操作を始める指示にはなりますが、MCPツールの承認そのものにはなりません。
 
-Single Prompt Agentには`submission`や`playground`などの独自モードはありません。Foundry Playgroundでは通常のチャット文字列だけで会話から申請まで実行できます。Webアプリからは所有者連携のために任意の`conversation_id`を入力へ添えますが、BFF発行トークンは使用しません。
+Single Prompt Agentには`submission`や`playground`などの独自モードはありません。Foundry Playgroundでは通常のチャットで申請案まで作成し、最終送信時だけFoundryのMCP承認画面を使います。Webアプリは、所有者連携のためにBFFが発行した`conversation_id`を入力へ添えます。BFF発行トークンは使用しません。
 
-Hosted AgentもFoundry Playgroundから通常のチャットとして直接実行できます。確認、修正、承認はすべてテキスト応答と通常の利用者メッセージで進み、外部クライアントへfunction callを返しません。保存済みチェックポイントからの再開はHosted Agent内部で処理します。
+Hosted AgentもFoundry Playgroundから直接実行できます。依頼確認と旅程修正は通常のチャットで進み、最終送信だけ構造化されたMCP承認要求を外部クライアントへ返します。保存済みチェックポイントとMCPセッションからの再開はHosted Agent内部で処理します。BFFは承認可否を文言から判定せず、承認要求と利用者の構造化された回答を中継します。
 
 | 画面 | 用途 |
 |---|---|
@@ -141,12 +143,14 @@ flowchart TD
     Compliant -->|適合| Document["申請書を作成"]
     Document --> Prepare["MCPで申請内容を固定"]
     Prepare --> FinalConfirm["通常応答で固定内容を最終確認"]
-    FinalConfirm -->|拒否| Cancel["送信せず終了"]
-    FinalConfirm -->|承認| MCP["Prompt AgentからMCPを直接実行"]
-    MCP --> Done["申請完了"]
+    FinalConfirm -->|中止| Cancel["送信せず終了"]
+    FinalConfirm -->|送信操作を開始| MCP["Prompt Agentからsubmitを要求"]
+    MCP --> NativeApproval{"FoundryのMCP承認"}
+    NativeApproval -->|拒否| Cancel
+    NativeApproval -->|許可| Done["申請完了"]
 ```
 
-Single Prompt Agentは`request_info`や`mcp_approval_request`を使用しません。依頼確認、旅程レビュー、最終送信確認を通常のアシスタント応答で行い、次の利用者メッセージを`previous_response_id`で同じResponses会話へ渡します。MCPのprepareツールは、申請書、構造化旅程、規程判定を短命approvalへ固定します。Prompt Agentは最終回答を変更せず、`approval_id`と`confirmation_text`をsubmitツールへ渡します。承認可否はMCPが判定します。
+Single Prompt Agentは、依頼確認、旅程レビュー、最終送信確認を通常のアシスタント応答で行い、次の利用者メッセージを`previous_response_id`で同じResponses会話へ渡します。運賃の根拠にはJR各社、NAVITIME、駅探、ジョルダンなどの許可ドメインだけを採用し、MCPも`source_url`を再検証します。prepareツールは、申請書、構造化旅程、規程判定を短命approvalへ固定します。submitツールには`approval_id`だけを渡し、Foundryが`mcp_approval_request`を返して実行を保留します。利用者の`mcp_approval_response`で許可された場合だけ、同じResponses会話を再開して登録します。
 
 受け付けたメッセージも会話ドキュメントに保存し、BFF レプリカが lease を取得して処理します。レプリカが途中で停止した場合は、lease の期限後に別レプリカが残作業を引き継ぎます。
 
@@ -158,7 +162,7 @@ Container Apps の Easy Auth が利用者を Microsoft Entra ID で認証しま�
 
 BFF は所有者が一致する場合だけ、会話の取得、メッセージ送信、SSE 接続、申請一覧取得を許可します。リクエスト本文の `user_id` は信頼しません。
 
-Hosted AgentとSingle Prompt Agentは、それぞれのManaged IdentityでMCPへ接続します。prepareツールは会話ドキュメントから認証済み所有者を解決し、申請書、旅程、規程判定、ハッシュ、冪等性キー、有効期限を短命approvalへ固定します。Foundry Playgroundから会話IDなしで呼ばれた場合は、Hosted Agentを`foundry-hosted-agent`、Single Prompt Agentを`foundry-prompt-agent`として区別します。submitツールは、加工前の最終回答、approvalの状態と有効期限を検証し、固定済みデータだけを登録してapprovalを消費済みにします。BFFはapprovalを作成、参照、更新しません。
+Hosted Agentは自身のManaged Identity、Single Prompt AgentはFoundry Project Managed IdentityでMCPへ接続します。prepareツールは`agent_scenario`を必須の列挙値として検証し、Webアプリ経由では会話ドキュメントのシナリオと所有者も照合します。その後、申請書、旅程、規程判定、ハッシュ、冪等性キー、有効期限を短命approvalへ固定します。Foundry Playgroundから会話IDなしで呼ばれた場合は、Hosted Agentを`foundry-hosted-agent`、Single Prompt Agentを`foundry-prompt-agent`として区別します。submitツールはFoundryのネイティブ承認後に呼ばれ、approvalの状態と有効期限を検証し、固定済みデータだけを登録してapprovalを消費済みにします。BFFはapprovalを作成、参照、更新しません。
 
 ## リポジトリはBFF、Hosted Agent、MCPを分離している
 
@@ -337,12 +341,22 @@ az bicep build --file infra/main.bicep
 azd show
 ```
 
-Hosted Agent のスモークテストは、デプロイ後の Responses API を直接呼び、確認要求にfunction callが含まれず、通常のチャット返信だけで再開できることを検証します。
+Hosted Agentのスモークテストは、デプロイ後のResponses APIを直接呼びます。既定ではsubmitを実行せず、ネイティブMCP承認要求で停止することを確認します。`--decision reject`は拒否時に未送信となること、`--decision approve`は許可後だけ申請番号が返ることを検証します。
 
 ```bash
 python scripts/smoke-hosted-agent.py \
   --project-endpoint "https://<account>.services.ai.azure.com/api/projects/<project>" \
   --agent-name travel-request-agent
+
+python scripts/smoke-hosted-agent.py \
+  --project-endpoint "https://<account>.services.ai.azure.com/api/projects/<project>" \
+  --agent-name travel-request-agent \
+  --decision reject
+
+python scripts/smoke-hosted-agent.py \
+  --project-endpoint "https://<account>.services.ai.azure.com/api/projects/<project>" \
+  --agent-name travel-request-agent \
+  --decision approve
 ```
 
 ## Cosmos DB のコンテナーとキーを固定する
@@ -381,7 +395,7 @@ Foundryでは、確認、修正、MCP実行を応答ターンごとのトレー�
 | Hosted Agent | Foundry がコンテナーを管理し、Responses API として公開する Agent Framework アプリ |
 | Prompt Agent | モデル、instructions、toolsをFoundry側のversionとして管理するエージェント |
 | HITL | 依頼内容、旅程、送信を利用者が確認してから処理を再開する仕組み |
-| approval | MCPが申請内容を固定し、加工前の利用者回答を検証して消費する短命な許可情報 |
+| approval | MCPが申請内容を固定し、Foundry runtimeが承認したsubmitで一度だけ消費する短命な許可情報 |
 | durable SSE | イベントをメモリではなく Cosmos DB に保存し、切断後も `Last-Event-ID` から再送する方式 |
 | comparison run | 同じDatasetと評価基準で、2つのエージェント構成を対にして実行した評価単位 |
 
