@@ -78,6 +78,8 @@ def deploy(
     model: str,
     mcp_connection_id: str,
     mcp_server_url: str,
+    web_iq_connection_id: str,
+    web_iq_server_url: str,
 ) -> dict[str, str]:
     definitions = _load_definitions()
     deployed: dict[str, str] = {}
@@ -86,6 +88,8 @@ def deploy(
             model,
             mcp_connection_id=mcp_connection_id,
             mcp_server_url=mcp_server_url,
+            web_iq_connection_id=web_iq_connection_id,
+            web_iq_server_url=web_iq_server_url,
         )
         definition_hash = _definition_hash(definition, agent_spec.description)
         existing = _matching_version(
@@ -127,7 +131,10 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-5.4"),
+        default=os.getenv(
+            "AZURE_AI_MODEL_DEPLOYMENT_NAME",
+            "gpt-5.6-luna",
+        ),
     )
     parser.add_argument(
         "--mcp-connection-id",
@@ -136,6 +143,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mcp-server-url",
         default=os.getenv("MCP_TOOL_ENDPOINT"),
+    )
+    parser.add_argument(
+        "--web-iq-connection-id",
+        default=os.getenv("WEB_IQ_PROJECT_CONNECTION_ID"),
+    )
+    parser.add_argument(
+        "--web-iq-server-url",
+        default=os.getenv(
+            "WEB_IQ_MCP_ENDPOINT",
+            "https://api.microsoft.ai/v3/mcp",
+        ),
     )
     parser.add_argument(
         "--output",
@@ -153,12 +171,21 @@ def _parse_args() -> argparse.Namespace:
         )
     if not args.mcp_server_url:
         parser.error("--mcp-server-url or MCP_TOOL_ENDPOINT is required")
+    if not args.web_iq_connection_id:
+        parser.error(
+            "--web-iq-connection-id or "
+            "WEB_IQ_PROJECT_CONNECTION_ID is required"
+        )
+    if not args.web_iq_server_url:
+        parser.error(
+            "--web-iq-server-url or WEB_IQ_MCP_ENDPOINT is required"
+        )
     return args
 
 
 def main() -> None:
     args = _parse_args()
-    credential = DefaultAzureCredential()
+    credential = DefaultAzureCredential(process_timeout=60)
     with AIProjectClient(
         endpoint=args.project_endpoint,
         credential=credential,
@@ -168,6 +195,8 @@ def main() -> None:
             model=args.model,
             mcp_connection_id=args.mcp_connection_id,
             mcp_server_url=args.mcp_server_url,
+            web_iq_connection_id=args.web_iq_connection_id,
+            web_iq_server_url=args.web_iq_server_url,
         )
 
     output = json.dumps(

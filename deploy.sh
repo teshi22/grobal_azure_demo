@@ -8,14 +8,16 @@ HOSTED_AGENT_NAME="${HOSTED_AGENT_NAME:-travel-request-agent}"
 SINGLE_PROMPT_AGENT_NAME="${SINGLE_PROMPT_AGENT_NAME:-travel-request-single-agent}"
 SINGLE_PROMPT_EVALUATION_AGENT_NAME="${SINGLE_PROMPT_EVALUATION_AGENT_NAME:-travel-request-single-evaluator}"
 MCP_CONNECTION_NAME="${MCP_CONNECTION_NAME:-travel-request-mcp}"
+WEB_IQ_CONNECTION_NAME="${WEB_IQ_CONNECTION_NAME:-travel-web-iq}"
+WEB_IQ_MCP_ENDPOINT="${WEB_IQ_MCP_ENDPOINT:-https://api.microsoft.ai/v3/mcp}"
 CLARIFIER_AGENT_NAME="${CLARIFIER_AGENT_NAME:-travel-request-clarifier}"
 PLANNER_AGENT_NAME="${PLANNER_AGENT_NAME:-travel-request-planner}"
 POLICY_AGENT_NAME="${POLICY_AGENT_NAME:-travel-request-policy-narrator}"
 APPROVAL_AGENT_NAME="${APPROVAL_AGENT_NAME:-travel-request-approval-writer}"
-MODEL_DEPLOYMENT_NAME="${MODEL_DEPLOYMENT_NAME:-gpt-5.4}"
+MODEL_DEPLOYMENT_NAME="${MODEL_DEPLOYMENT_NAME:-gpt-5.6-luna}"
 EVALUATION_JUDGE_MODEL="${EVALUATION_JUDGE_MODEL:-$MODEL_DEPLOYMENT_NAME}"
 RUN_EVALUATION_SMOKE="${RUN_EVALUATION_SMOKE:-false}"
-MODEL_CAPACITY="${MODEL_CAPACITY:-20}"
+MODEL_CAPACITY="${MODEL_CAPACITY:-1000}"
 MCP_APP_DISPLAY_NAME="${MCP_APP_DISPLAY_NAME:-travel-mcp-functions}"
 WEB_APP_DISPLAY_NAME="${WEB_APP_DISPLAY_NAME:-travel-agent-web}"
 IMAGE_NAME="${IMAGE_NAME:-travel-agent-app}"
@@ -229,6 +231,27 @@ MCP_CONNECTION_ID=$(jq -er \
   '.id // .connectionId // .name' \
   <<<"$MCP_CONNECTION_JSON")
 
+echo "Configuring Web IQ MCP connection..."
+if [[ -n "${WEBIQ_API_KEY:-}" ]]; then
+  WEB_IQ_CONNECTION_JSON=$(azd ai connection create "$WEB_IQ_CONNECTION_NAME" \
+    --project-endpoint "$PROJECT_ENDPOINT" \
+    --kind remote-tool \
+    --target "$WEB_IQ_MCP_ENDPOINT" \
+    --auth-type custom-keys \
+    --custom-key "x-apikey=${WEBIQ_API_KEY}" \
+    --force \
+    --output json \
+    --no-prompt)
+else
+  WEB_IQ_CONNECTION_JSON=$(azd ai connection show "$WEB_IQ_CONNECTION_NAME" \
+    --project-endpoint "$PROJECT_ENDPOINT" \
+    --output json \
+    --no-prompt)
+fi
+WEB_IQ_CONNECTION_ID=$(jq -er \
+  '.id // .connectionId // .name' \
+  <<<"$WEB_IQ_CONNECTION_JSON")
+
 echo "Synchronizing versioned Prompt Agents..."
 python -m pip install \
   --quiet \
@@ -240,6 +263,8 @@ for attempt in {1..12}; do
     --model "$MODEL_DEPLOYMENT_NAME" \
     --mcp-connection-id "$MCP_CONNECTION_ID" \
     --mcp-server-url "$MCP_TOOL_ENDPOINT" \
+    --web-iq-connection-id "$WEB_IQ_CONNECTION_ID" \
+    --web-iq-server-url "$WEB_IQ_MCP_ENDPOINT" \
     --output "$PROMPT_AGENT_VERSIONS_FILE" \
     >/dev/null; then
     break

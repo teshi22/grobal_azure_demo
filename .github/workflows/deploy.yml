@@ -18,13 +18,16 @@ env:
   SINGLE_PROMPT_AGENT_NAME: travel-request-single-agent
   SINGLE_PROMPT_EVALUATION_AGENT_NAME: travel-request-single-evaluator
   MCP_CONNECTION_NAME: travel-request-mcp
+  WEB_IQ_CONNECTION_NAME: travel-web-iq
+  WEB_IQ_MCP_ENDPOINT: https://api.microsoft.ai/v3/mcp
+  WEBIQ_API_KEY: ${{ secrets.WEBIQ_API_KEY }}
   CLARIFIER_AGENT_NAME: travel-request-clarifier
   PLANNER_AGENT_NAME: travel-request-planner
   POLICY_AGENT_NAME: travel-request-policy-narrator
   APPROVAL_AGENT_NAME: travel-request-approval-writer
-  MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
-  EVALUATION_JUDGE_MODEL: ${{ vars.EVALUATION_JUDGE_MODEL || vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.4' }}
-  MODEL_CAPACITY: ${{ vars.AZURE_AI_MODEL_CAPACITY || '20' }}
+  MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.6-luna' }}
+  EVALUATION_JUDGE_MODEL: ${{ vars.EVALUATION_JUDGE_MODEL || vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.6-luna' }}
+  MODEL_CAPACITY: ${{ vars.AZURE_AI_MODEL_CAPACITY || '1000' }}
   MCP_ENTRA_CLIENT_ID: ${{ vars.MCP_ENTRA_CLIENT_ID || secrets.MCP_ENTRA_CLIENT_ID }}
   WEB_ENTRA_CLIENT_ID: ${{ vars.WEB_ENTRA_CLIENT_ID || secrets.WEB_ENTRA_CLIENT_ID }}
 
@@ -42,6 +45,7 @@ jobs:
           set -euo pipefail
           : "${MCP_ENTRA_CLIENT_ID:?Set the MCP_ENTRA_CLIENT_ID repository variable or secret.}"
           : "${WEB_ENTRA_CLIENT_ID:?Set the WEB_ENTRA_CLIENT_ID repository variable or secret.}"
+          : "${WEBIQ_API_KEY:?Set the WEBIQ_API_KEY repository secret.}"
 
       - name: Azure login
         uses: azure/login@v2
@@ -195,6 +199,20 @@ jobs:
             '.id // .connectionId // .name' \
             "$RUNNER_TEMP/mcp-connection.json")
           echo "MCP_CONNECTION_ID=${mcp_connection_id}" >> "$GITHUB_ENV"
+          azd ai connection create "$WEB_IQ_CONNECTION_NAME" \
+            --project-endpoint "$PROJECT_ENDPOINT" \
+            --kind remote-tool \
+            --target "$WEB_IQ_MCP_ENDPOINT" \
+            --auth-type custom-keys \
+            --custom-key "x-apikey=${WEBIQ_API_KEY}" \
+            --force \
+            --output json \
+            --no-prompt \
+            > "$RUNNER_TEMP/web-iq-connection.json"
+          web_iq_connection_id=$(jq -er \
+            '.id // .connectionId // .name' \
+            "$RUNNER_TEMP/web-iq-connection.json")
+          echo "WEB_IQ_CONNECTION_ID=${web_iq_connection_id}" >> "$GITHUB_ENV"
 
       - name: Synchronize versioned Prompt Agents
         shell: bash
@@ -211,6 +229,8 @@ jobs:
               --model "$MODEL_DEPLOYMENT_NAME" \
               --mcp-connection-id "$MCP_CONNECTION_ID" \
               --mcp-server-url "$MCP_TOOL_ENDPOINT" \
+              --web-iq-connection-id "$WEB_IQ_CONNECTION_ID" \
+              --web-iq-server-url "$WEB_IQ_MCP_ENDPOINT" \
               --output "$versions_file" \
               >/dev/null; then
               break

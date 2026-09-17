@@ -19,19 +19,19 @@ param projectDisplayName string = 'Travel Request Agent'
 param location string = 'japaneast'
 
 @description('GPT モデル名')
-param modelName string = 'gpt-5.4'
+param modelName string = 'gpt-5.6-luna'
 
 @description('モデルフォーマット')
 param modelFormat string = 'OpenAI'
 
 @description('モデルバージョン')
-param modelVersion string = '2026-03-05'
+param modelVersion string = '2026-07-09'
 
 @description('モデル SKU')
 param modelSkuName string = 'GlobalStandard'
 
 @description('モデルキャパシティ (TPM)')
-param modelCapacity int = 20
+param modelCapacity int = 1000
 
 @description('MCP Functions 用 Entra ID アプリ登録のクライアント ID')
 param mcpEntraClientId string = ''

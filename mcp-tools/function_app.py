@@ -8,6 +8,7 @@ import logging
 
 import azure.functions as func
 from tools.submit_travel_request import (
+    APPLICATION_DATA_SCHEMA,
     prepare_travel_request_submission,
     submit_travel_request,
     submit_travel_request_with_approval,
@@ -77,8 +78,8 @@ MCP_TOOLS = [
                     "description": "アプリ経由の場合だけ指定する会話ID",
                 },
                 "application_data": {
-                    "type": "object",
                     "description": "最終確認の対象として固定する構造化申請データ",
+                    **APPLICATION_DATA_SCHEMA,
                 },
                 "policy_result": {
                     "type": "string",

@@ -19,7 +19,7 @@ from azure.ai.projects.models import (
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
-ALLOWED_FARE_DOMAINS = (
+ALLOWED_SEARCH_DOMAINS = (
     "jreast.co.jp",
     "jr-central.co.jp",
     "jr-odekake.net",
@@ -34,6 +34,11 @@ ALLOWED_FARE_DOMAINS = (
     "transit.yahoo.co.jp",
     "jorudan.co.jp",
     "navitime.co.jp",
+    "travel.rakuten.co.jp",
+    "jalan.net",
+    "toyoko-inn.com",
+    "route-inn.co.jp",
+    "superhotel.co.jp",
 )
 
 EXTRACTED_REQUEST_SCHEMA: dict[str, Any] = {
@@ -211,6 +216,7 @@ class PromptAgentSpec:
     response_schema: dict[str, Any] | None = None
     response_schema_name: str = ""
     web_search: bool = False
+    web_iq: bool = False
     mcp_submission: bool = False
     require_tool: bool = False
 
@@ -224,10 +230,24 @@ class PromptAgentSpec:
         *,
         mcp_connection_id: str = "",
         mcp_server_url: str = "",
+        web_iq_connection_id: str = "",
+        web_iq_server_url: str = "",
     ) -> PromptAgentDefinition:
         tools = []
         if self.web_search:
             tools.append(build_web_search_tool())
+        if self.web_iq:
+            if not web_iq_connection_id or not web_iq_server_url:
+                raise ValueError(
+                    "Web IQ connection ID and server URL are required "
+                    "for the browsing agent"
+                )
+            tools.append(
+                build_web_iq_mcp_tool(
+                    connection_id=web_iq_connection_id,
+                    server_url=web_iq_server_url,
+                )
+            )
         if self.mcp_submission:
             if not mcp_connection_id or not mcp_server_url:
                 raise ValueError(
@@ -261,7 +281,7 @@ class PromptAgentSpec:
 def build_web_search_tool() -> WebSearchTool:
     return WebSearchTool(
         filters=WebSearchToolFilters(
-            allowed_domains=list(ALLOWED_FARE_DOMAINS),
+            allowed_domains=list(ALLOWED_SEARCH_DOMAINS),
         ),
         user_location=WebSearchApproximateLocation(
             country="JP",
@@ -286,6 +306,20 @@ def build_submission_mcp_tool(
             "prepare_travel_request_submission",
             "submit_travel_request_with_approval",
         ],
+        require_approval="never",
+    )
+
+
+def build_web_iq_mcp_tool(
+    *,
+    connection_id: str,
+    server_url: str,
+) -> MCPTool:
+    return MCPTool(
+        server_label="travel-web-iq",
+        server_url=server_url,
+        project_connection_id=connection_id,
+        allowed_tools=["web", "browse"],
         require_approval="never",
     )
 
@@ -324,7 +358,7 @@ PROMPT_AGENT_SPECS = (
             "submission flow without application-defined modes."
         ),
         prompt_file="travel-request-single-agent.txt",
-        web_search=True,
+        web_iq=True,
         mcp_submission=True,
     ),
     PromptAgentSpec(

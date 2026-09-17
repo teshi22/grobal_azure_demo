@@ -25,7 +25,7 @@ flowchart LR
             Policy["Policy Checker"]
             Writer["Approval Writer"]
         end
-        Single["Single Prompt Agent<br/>会話 + Web Search + MCP"]
+        Single["Single Prompt Agent<br/>会話 + Web IQ + MCP"]
         Evaluation["Foundry Evaluation<br/>同一Dataset・同一rubric"]
         Model["GPT model deployment"]
     end
@@ -34,6 +34,7 @@ flowchart LR
         MCP["MCP<br/>prepare / submit"]
     end
 
+    WebIQ["Microsoft Web IQ MCP<br/>web / browse"]
     Cosmos[("Azure Cosmos DB<br/>会話・イベント<br/>申請・評価結果")]
     Insights["Application Insights"]
 
@@ -47,7 +48,8 @@ flowchart LR
     BFF --> Evaluation
     Evaluation --> Host
     Evaluation --> Single
-    Single -->|"Web Search"| Model
+    Single --> Model
+    Single -->|"経路・運賃調査"| WebIQ
     Single -->|"明示承認後のtool call"| MCP
     Writer --> MCP
     BFF --> Cosmos
@@ -86,7 +88,7 @@ Prompt Agentは名前だけでなくversionも設定に保存します。プロ�
 | シナリオ | 実行内容 |
 |---|---|
 | Agent Framework workflow | Hosted Agent内のワークフローが処理順を制御し、4つの専門Prompt Agent、決定論的な規程判定、Agent Frameworkの`request_info`を組み合わせる |
-| Single Prompt Agent | 1つのPrompt Agentが通常会話だけで依頼整理、Web検索、規程判断、申請案作成、確認、修正、最終承認を管理し、承認後にMCPを直接実行する |
+| Single Prompt Agent | 1つのPrompt Agentが通常会話だけで依頼整理、Web IQによる経路・運賃調査、規程判断、申請案作成、確認、修正、最終承認を管理し、承認後にMCPを直接実行する |
 
 両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正、申請書案の最終確認を画面内で行います。会話はシナリオごとに独立しているため、一方を操作しても他方の状態は変わりません。
 
@@ -108,7 +110,7 @@ Single Prompt Agentには`submission`や`playground`などの独自モードは�
 | シナリオ | 構成 |
 |---|---|
 | Agent Framework workflow | Hosted Agentが処理順と状態を管理し、4つのPrompt Agentと決定論的な規程判定を組み合わせる |
-| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web検索、規程判断、申請案作成までを処理する |
+| Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web IQによる経路・運賃調査、規程判断、申請案作成までを処理する |
 
 初期ケースは`evaluation-data/travel-request-cases.jsonl`に20件あります。標準的な国内出張、情報不足、規程の境界条件、複雑な経路、相対日付を含みます。画面から追加・編集・複製でき、JSONLも取り込めます。
 
@@ -128,7 +130,7 @@ flowchart TD
     Clarify --> Complete{"出発地・目的地・日程・目的が揃ったか"}
     Complete -->|不足| Ask["通常応答で不足情報を確認"] --> Clarify
     Complete -->|揃った| Confirm["通常応答で依頼内容を確認"]
-    Confirm --> Plan["Web Search で旅程を作成"]
+    Confirm --> Plan["Web IQ の web と browse で旅程を作成"]
     Plan --> Review["通常応答で旅程をレビュー"]
     Review -->|修正| Plan
     Review -->|承認| Rules["決定論的な旅費規程判定"]
@@ -249,11 +251,14 @@ AZURE_SUBSCRIPTION_ID=<subscription-id> \
 RESOURCE_GROUP=rg-travel-agent-prod \
 LOCATION=japaneast \
 AZURE_ENV_NAME=travel-agent-prod \
-MODEL_DEPLOYMENT_NAME=gpt-5.4 \
+MODEL_DEPLOYMENT_NAME=gpt-5.6-luna \
+WEBIQ_API_KEY='<Web IQ API key>' \
 bash deploy.sh
 ```
 
-既存のアプリ登録を使う場合は、`MCP_ENTRA_CLIENT_ID` と `WEB_ENTRA_CLIENT_ID` も指定してください。スクリプトはデプロイ結果をもとに、ルート、`app/backend`、`hosted-agent` の `.env` を生成します。
+既存のアプリ登録を使う場合は、`MCP_ENTRA_CLIENT_ID` と `WEB_ENTRA_CLIENT_ID` も指定してください。`WEBIQ_API_KEY`は初回にWeb IQ Project Connectionを作成するときだけ必要です。キーはFoundry Connectionへ保存し、ソース、`.env`、ログへ記録しないでください。既存の`travel-web-iq` Connectionがある場合は、環境変数を省略できます。スクリプトはデプロイ結果をもとに、ルート、`app/backend`、`hosted-agent` の `.env` を生成します。
+
+Single Prompt Agentは、Web IQ MCPの`web`で候補ページを探し、`browse`でNAVITIMEなどの本文を取得してから運賃を確定します。出発時刻が未指定の場合は午前10時ごろを仮定し、旅程レビューに明記します。Web IQは限定アクセスのPreviewで、利用料金が発生します。また、処理内容がAzureのコンプライアンス境界外へ送られる可能性があります。
 
 ### GitHub Actions から継続デプロイする
 
@@ -266,6 +271,7 @@ OIDC 用の GitHub Secrets:
 | `AZURE_CLIENT_ID` | GitHub OIDC で使うサービスプリンシパルの client ID |
 | `AZURE_TENANT_ID` | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | デプロイ先 subscription ID |
+| `WEBIQ_API_KEY` | Web IQ Project Connectionの`x-apikey`。リポジトリ変数ではなくSecretへ保存 |
 
 任意の GitHub Variables:
 
@@ -275,8 +281,8 @@ OIDC 用の GitHub Secrets:
 | `WEB_ENTRA_CLIENT_ID` | Container Apps Easy Auth用Entraアプリのclient ID。既存secretも後方互換で利用可能 |
 | `AZURE_ENV_NAME` | `travel-agent-prod` |
 | `AZURE_RESOURCE_GROUP` | `rg-travel-agent-hosted-demo` |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `gpt-5.4` |
-| `AZURE_AI_MODEL_CAPACITY` | `20`（20K TPM） |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `gpt-5.6-luna` |
+| `AZURE_AI_MODEL_CAPACITY` | `1000`（1M TPM） |
 
 GitHub OIDC のサービスプリンシパルには、リソース作成と RBAC 割り当てに加え、BFF 用アプリ登録の redirect URI を更新できる Microsoft Graph 権限または所有権が必要です。
 

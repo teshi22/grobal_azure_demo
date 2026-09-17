@@ -23,6 +23,97 @@ from tools.cosmos_client import (
 logger = logging.getLogger(__name__)
 
 _PROMPT_AGENT_FALLBACK_USER = "foundry-prompt-agent"
+_APPLICATION_STRING_FIELDS = (
+    "departure",
+    "destination",
+    "purpose",
+    "schedule",
+    "fare_basis",
+    "searched_at",
+)
+_LEG_STRING_FIELDS = (
+    "direction",
+    "method",
+    "from",
+    "to",
+    "fare_type",
+    "source_url",
+    "source_title",
+)
+
+TRANSPORTATION_LEG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "direction": {"type": "string"},
+        "method": {"type": "string"},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "cost": {"type": "integer", "minimum": 0},
+        "fare_type": {"type": "string"},
+        "source_url": {"type": "string"},
+        "source_title": {"type": "string"},
+    },
+    "required": [
+        "direction",
+        "method",
+        "from",
+        "to",
+        "cost",
+        "fare_type",
+        "source_url",
+        "source_title",
+    ],
+    "additionalProperties": False,
+}
+
+APPLICATION_DATA_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "departure": {"type": "string"},
+        "destination": {"type": "string"},
+        "purpose": {"type": "string"},
+        "schedule": {"type": "string"},
+        "trip_type": {"type": "string", "enum": ["日帰り", "宿泊"]},
+        "transportation_legs": {
+            "type": "array",
+            "items": TRANSPORTATION_LEG_SCHEMA,
+            "minItems": 2,
+        },
+        "transportation_cost": {"type": "integer", "minimum": 0},
+        "hotel": {"type": ["string", "null"]},
+        "hotel_cost_per_night": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+        },
+        "hotel_nights": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+        },
+        "total_cost": {"type": "integer", "minimum": 0},
+        "distance_km": {"type": "number", "minimum": 0},
+        "travel_time_hours": {"type": "number", "minimum": 0},
+        "fare_basis": {"type": "string"},
+        "searched_at": {"type": "string"},
+    },
+    "required": [
+        "departure",
+        "destination",
+        "purpose",
+        "schedule",
+        "trip_type",
+        "transportation_legs",
+        "transportation_cost",
+        "hotel",
+        "hotel_cost_per_night",
+        "hotel_nights",
+        "total_cost",
+        "distance_km",
+        "travel_time_hours",
+        "fare_basis",
+        "searched_at",
+    ],
+    "additionalProperties": False,
+}
 
 
 def _failure(message: str) -> dict:
@@ -55,11 +146,101 @@ def _validate_prepare_arguments(arguments: dict) -> str | None:
             return f"{key} is required"
     if not isinstance(arguments.get("application_data"), dict):
         return "application_data must be an object"
+    application_error = _validate_application_data(arguments["application_data"])
+    if application_error:
+        return application_error
     conversation_id = arguments.get("conversation_id")
     if conversation_id is not None and (
         not isinstance(conversation_id, str) or not conversation_id.strip()
     ):
         return "conversation_id must be a non-empty string when provided"
+    return None
+
+
+def _validate_application_data(application_data: dict) -> str | None:
+    for key in _APPLICATION_STRING_FIELDS:
+        if (
+            not isinstance(application_data.get(key), str)
+            or not application_data[key].strip()
+        ):
+            return f"application_data.{key} is required"
+
+    trip_type = application_data.get("trip_type")
+    if trip_type not in {"日帰り", "宿泊"}:
+        return "application_data.trip_type must be 日帰り or 宿泊"
+
+    legs = application_data.get("transportation_legs")
+    if not isinstance(legs, list) or len(legs) < 2:
+        return "application_data.transportation_legs must contain outbound and return legs"
+    for index, leg in enumerate(legs):
+        if not isinstance(leg, dict):
+            return f"application_data.transportation_legs[{index}] must be an object"
+        for key in _LEG_STRING_FIELDS:
+            if not isinstance(leg.get(key), str) or not leg[key].strip():
+                return (
+                    f"application_data.transportation_legs[{index}].{key} "
+                    "is required"
+                )
+        cost = leg.get("cost")
+        if not isinstance(cost, int) or isinstance(cost, bool) or cost < 0:
+            return (
+                f"application_data.transportation_legs[{index}].cost "
+                "must be a non-negative integer"
+            )
+
+    transportation_cost = application_data.get("transportation_cost")
+    if (
+        not isinstance(transportation_cost, int)
+        or isinstance(transportation_cost, bool)
+        or transportation_cost < 0
+    ):
+        return "application_data.transportation_cost must be a non-negative integer"
+    if transportation_cost != sum(leg["cost"] for leg in legs):
+        return "application_data.transportation_cost does not match leg costs"
+
+    for key in ("distance_km", "travel_time_hours"):
+        value = application_data.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value < 0
+        ):
+            return f"application_data.{key} must be a non-negative number"
+
+    if trip_type == "日帰り":
+        if any(
+            application_data.get(key) is not None
+            for key in ("hotel", "hotel_cost_per_night", "hotel_nights")
+        ):
+            return "Day trips must not contain hotel details"
+        hotel_cost = 0
+    else:
+        hotel = application_data.get("hotel")
+        hotel_cost_per_night = application_data.get("hotel_cost_per_night")
+        hotel_nights = application_data.get("hotel_nights")
+        if not isinstance(hotel, str) or not hotel.strip():
+            return "application_data.hotel is required for overnight trips"
+        if (
+            not isinstance(hotel_cost_per_night, int)
+            or isinstance(hotel_cost_per_night, bool)
+            or hotel_cost_per_night < 0
+        ):
+            return "application_data.hotel_cost_per_night must be a non-negative integer"
+        if (
+            not isinstance(hotel_nights, int)
+            or isinstance(hotel_nights, bool)
+            or hotel_nights < 1
+        ):
+            return "application_data.hotel_nights must be a positive integer"
+        hotel_cost = hotel_cost_per_night * hotel_nights
+
+    total_cost = application_data.get("total_cost")
+    if (
+        not isinstance(total_cost, int)
+        or isinstance(total_cost, bool)
+        or total_cost != transportation_cost + hotel_cost
+    ):
+        return "application_data.total_cost does not match travel costs"
     return None
 
 

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # Azure AI Foundry
     azure_ai_project_endpoint: str
-    azure_ai_model_deployment_name: str = "gpt-5.4"
+    azure_ai_model_deployment_name: str = "gpt-5.6-luna"
     hosted_agent_name: str = "travel-request-agent"
     hosted_agent_version: str = ""
     single_prompt_agent_name: str = "travel-request-single-agent"
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         "travel-request-single-evaluator"
     )
     single_prompt_evaluation_agent_version: str = ""
-    evaluation_judge_model: str = "gpt-5.4"
+    evaluation_judge_model: str = "gpt-5.6-luna"
     evaluation_mode: Literal["foundry", "stub"] = "foundry"
     app_environment: str = "development"
     evaluation_retry_attempts: int = 3

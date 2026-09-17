@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     foundry_project_endpoint: str
-    azure_ai_model_deployment_name: str = "gpt-5.4"
+    azure_ai_model_deployment_name: str = "gpt-5.6-luna"
 
     clarifier_agent_name: str = "travel-request-clarifier"
     clarifier_agent_version: str = ""

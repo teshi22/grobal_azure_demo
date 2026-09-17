@@ -5,11 +5,53 @@ import copy
 
 from tools import submit_travel_request as submission
 from tools.submit_travel_request import (
+    APPLICATION_DATA_SCHEMA,
     _plan_hash,
     _validate_arguments,
     _validate_direct_arguments,
     _validate_prepare_arguments,
 )
+
+
+def _day_trip_plan() -> dict:
+    return {
+        "departure": "大阪",
+        "destination": "東京",
+        "purpose": "顧客訪問",
+        "schedule": "2026-10-20",
+        "trip_type": "日帰り",
+        "transportation_legs": [
+            {
+                "direction": "往路",
+                "method": "鉄道",
+                "from": "大阪駅",
+                "to": "東京駅",
+                "cost": 10000,
+                "fare_type": "指定席",
+                "source_url": "https://example.com/outbound",
+                "source_title": "往路運賃",
+            },
+            {
+                "direction": "復路",
+                "method": "鉄道",
+                "from": "東京駅",
+                "to": "大阪駅",
+                "cost": 10000,
+                "fare_type": "指定席",
+                "source_url": "https://example.com/return",
+                "source_title": "復路運賃",
+            },
+        ],
+        "transportation_cost": 20000,
+        "hotel": None,
+        "hotel_cost_per_night": None,
+        "hotel_nights": None,
+        "total_cost": 20000,
+        "distance_km": 1000,
+        "travel_time_hours": 5,
+        "fare_basis": "検索結果",
+        "searched_at": "2026-09-16",
+    }
 
 
 def test_plan_hash_uses_compact_utf8_json():
@@ -44,6 +86,51 @@ def test_prompt_agent_prepare_requires_application_data():
     assert error == "application_data must be an object"
 
 
+def test_prepare_tool_exposes_strict_application_schema():
+    assert APPLICATION_DATA_SCHEMA["additionalProperties"] is False
+    assert APPLICATION_DATA_SCHEMA["properties"]["trip_type"]["enum"] == [
+        "日帰り",
+        "宿泊",
+    ]
+    assert APPLICATION_DATA_SCHEMA["properties"]["distance_km"]["type"] == "number"
+    assert (
+        APPLICATION_DATA_SCHEMA["properties"]["transportation_legs"]["items"][
+            "additionalProperties"
+        ]
+        is False
+    )
+
+
+def test_prompt_agent_prepare_rejects_inconsistent_costs():
+    plan = _day_trip_plan()
+    plan["total_cost"] = 1
+
+    error = _validate_prepare_arguments(
+        {
+            "application_text": "申請書",
+            "application_data": plan,
+            "policy_result": "規程適合",
+        }
+    )
+
+    assert error == "application_data.total_cost does not match travel costs"
+
+
+def test_prompt_agent_prepare_rejects_invalid_day_trip_hotel():
+    plan = _day_trip_plan()
+    plan["hotel"] = "架空ホテル"
+
+    error = _validate_prepare_arguments(
+        {
+            "application_text": "申請書",
+            "application_data": plan,
+            "policy_result": "規程適合",
+        }
+    )
+
+    assert error == "Day trips must not contain hotel details"
+
+
 def test_prompt_agent_submission_requires_approval_id():
     error = _validate_direct_arguments({"user_confirmed": True})
     assert error == "approval_id is required"
@@ -59,7 +146,7 @@ def test_prompt_agent_submission_requires_explicit_user_confirmation():
 
 
 def test_prompt_agent_prepare_and_submit_uses_conversation_owner(monkeypatch):
-    plan = {"departure": "大阪", "destination": "東京"}
+    plan = _day_trip_plan()
     created = []
 
     class Conversations:
@@ -181,7 +268,7 @@ def test_prompt_agent_prepare_without_app_context_is_standalone(monkeypatch):
         submission.prepare_travel_request_submission(
             {
                 "application_text": "申請書",
-                "application_data": {"departure": "大阪"},
+                "application_data": _day_trip_plan(),
                 "policy_result": "規程適合",
             }
         )
