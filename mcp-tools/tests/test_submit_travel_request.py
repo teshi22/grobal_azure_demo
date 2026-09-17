@@ -3,6 +3,7 @@ import json
 import asyncio
 import copy
 
+import pytest
 from tools import submit_travel_request as submission
 from tools.submit_travel_request import (
     APPLICATION_DATA_SCHEMA,
@@ -132,7 +133,7 @@ def test_prompt_agent_prepare_rejects_invalid_day_trip_hotel():
 
 
 def test_prompt_agent_submission_requires_approval_id():
-    error = _validate_direct_arguments({"user_confirmed": True})
+    error = _validate_direct_arguments({"confirmation_text": "申請する"})
     assert error == "approval_id is required"
 
 
@@ -142,10 +143,21 @@ def test_prompt_agent_submission_requires_explicit_user_confirmation():
             "approval_id": "approval-1",
         }
     )
-    assert error == "user_confirmed must be true"
+    assert error == "confirmation_text is required"
 
 
-def test_prompt_agent_prepare_and_submit_uses_conversation_owner(monkeypatch):
+@pytest.mark.parametrize(
+    ("scenario", "expected_mode"),
+    [
+        ("single_prompt_agent", "prompt_agent_mcp"),
+        ("agent_framework_workflow", "hosted_agent_mcp"),
+    ],
+)
+def test_prepare_and_submit_uses_conversation_owner(
+    monkeypatch,
+    scenario,
+    expected_mode,
+):
     plan = _day_trip_plan()
     created = []
 
@@ -155,7 +167,7 @@ def test_prompt_agent_prepare_and_submit_uses_conversation_owner(monkeypatch):
             return {
                 "id": "conversation-1",
                 "user_id": "user-1",
-                "scenario": "single_prompt_agent",
+                "scenario": scenario,
             }
 
     class Grants:
@@ -213,16 +225,17 @@ def test_prompt_agent_prepare_and_submit_uses_conversation_owner(monkeypatch):
         submission.submit_travel_request_with_approval(
             {
                 "approval_id": prepared["approval_id"],
-                "user_confirmed": True,
+                "confirmation_text": "申請する",
             }
         )
     )
 
     assert prepared["success"] is True
     assert result["success"] is True
+    assert result["submitted"] is True
     assert created[0]["user_id"] == "user-1"
     assert created[0]["conversation_id"] == "conversation-1"
-    assert created[0]["approval_mode"] == "prompt_agent_mcp"
+    assert created[0]["approval_mode"] == expected_mode
     assert created[0]["departure"] == "大阪"
     assert grants.item["status"] == "consumed"
 
@@ -277,7 +290,7 @@ def test_prompt_agent_prepare_without_app_context_is_standalone(monkeypatch):
         submission.submit_travel_request_with_approval(
             {
                 "approval_id": prepared["approval_id"],
-                "user_confirmed": True,
+                "confirmation_text": "申請する",
             }
         )
     )
@@ -285,3 +298,51 @@ def test_prompt_agent_prepare_without_app_context_is_standalone(monkeypatch):
     assert result["success"] is True
     assert created[0]["user_id"] == "foundry-prompt-agent"
     assert created[0]["conversation_id"].startswith("foundry-")
+
+
+def test_mcp_cancels_fixed_application_from_raw_user_response(monkeypatch):
+    class Grants:
+        def __init__(self):
+            self.item = {
+                "id": "approval-1",
+                "status": "awaiting_confirmation",
+                "expires_at": "2999-01-01T00:00:00+00:00",
+                "_etag": "etag-1",
+            }
+
+        async def read_item(self, item, partition_key):
+            assert item == partition_key == "approval-1"
+            return copy.deepcopy(self.item)
+
+        async def replace_item(self, item, body, etag, match_condition):
+            assert item == "approval-1"
+            assert etag == "etag-1"
+            self.item = copy.deepcopy(body)
+
+    grants = Grants()
+    monkeypatch.setattr(
+        submission,
+        "get_approval_grant_container",
+        lambda: grants,
+    )
+
+    result = asyncio.run(
+        submission.submit_travel_request_with_approval(
+            {
+                "approval_id": "approval-1",
+                "confirmation_text": "キャンセル",
+            }
+        )
+    )
+
+    assert result == {
+        "success": True,
+        "submitted": False,
+        "cancelled": True,
+        "duplicate": False,
+        "request_id": "",
+        "submitted_at": "",
+        "message": "出張申請の送信をキャンセルしました。",
+    }
+    assert grants.item["status"] == "cancelled"
+    assert grants.item["confirmation_text"] == "キャンセル"

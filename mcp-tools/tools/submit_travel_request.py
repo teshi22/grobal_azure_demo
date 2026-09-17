@@ -23,6 +23,20 @@ from tools.cosmos_client import (
 logger = logging.getLogger(__name__)
 
 _PROMPT_AGENT_FALLBACK_USER = "foundry-prompt-agent"
+_EXPLICIT_APPROVALS = frozenset(
+    {
+        "ok",
+        "yes",
+        "y",
+        "はい",
+        "承認",
+        "承認します",
+        "申請",
+        "申請する",
+        "申請します",
+        "申請してください",
+    }
+)
 _APPLICATION_STRING_FIELDS = (
     "departure",
     "destination",
@@ -250,9 +264,18 @@ def _validate_direct_arguments(arguments: dict) -> str | None:
         or not arguments["approval_id"].strip()
     ):
         return "approval_id is required"
-    if arguments.get("user_confirmed") is not True:
-        return "user_confirmed must be true"
+    confirmation_text = arguments.get("confirmation_text")
+    if (
+        not isinstance(confirmation_text, str)
+        or not confirmation_text.strip()
+    ):
+        return "confirmation_text is required"
     return None
+
+
+def _is_explicit_approval(confirmation_text: str) -> bool:
+    normalized = confirmation_text.strip().lower().rstrip("。.!！")
+    return normalized in _EXPLICIT_APPROVALS
 
 
 def _plan_hash(application_data: dict) -> str:
@@ -375,6 +398,7 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
 
     conversation_id = str(arguments.get("conversation_id") or "").strip()
     user_id = _PROMPT_AGENT_FALLBACK_USER
+    approval_mode = "prompt_agent_mcp"
     if conversation_id:
         conversations = get_conversation_container()
         try:
@@ -385,11 +409,17 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
         except CosmosResourceNotFoundError:
             return _failure("Conversation was not found")
 
-        if conversation.get("scenario") != "single_prompt_agent":
-            return _failure("Conversation is not a single Prompt Agent session")
+        scenario = str(conversation.get("scenario") or "")
+        if scenario not in {
+            "single_prompt_agent",
+            "agent_framework_workflow",
+        }:
+            return _failure("Conversation scenario does not support MCP approval")
         user_id = str(conversation.get("user_id") or "").strip()
         if not user_id:
             return _failure("Conversation has no owner")
+        if scenario == "agent_framework_workflow":
+            approval_mode = "hosted_agent_mcp"
 
     approval_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc)
@@ -404,7 +434,7 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
         "idempotency_key": hashlib.sha256(
             f"prompt-agent:{approval_id}".encode("utf-8")
         ).hexdigest(),
-        "approval_mode": "prompt_agent_mcp",
+        "approval_mode": approval_mode,
         "status": "awaiting_confirmation",
         "application_text": arguments["application_text"],
         "application_data": application_data,
@@ -441,10 +471,22 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
     if grant.get("status") == "consumed":
         return {
             "success": True,
+            "submitted": True,
+            "cancelled": False,
             "duplicate": True,
             "request_id": str(grant.get("request_id") or ""),
             "submitted_at": str(grant.get("consumed_at") or ""),
             "message": "この申請は登録済みです。",
+        }
+    if grant.get("status") == "cancelled":
+        return {
+            "success": True,
+            "submitted": False,
+            "cancelled": True,
+            "duplicate": True,
+            "request_id": "",
+            "submitted_at": "",
+            "message": "出張申請の送信をキャンセルしました。",
         }
     if grant.get("status") != "awaiting_confirmation":
         return _failure("Approval is not awaiting confirmation")
@@ -453,6 +495,37 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
     )
     if expires_at <= datetime.now(timezone.utc):
         return _failure("Approval has expired")
+
+    if not _is_explicit_approval(arguments["confirmation_text"]):
+        cancelled_at = datetime.now(timezone.utc).isoformat()
+        grant["status"] = "cancelled"
+        grant["cancelled_at"] = cancelled_at
+        grant["confirmation_text"] = arguments["confirmation_text"]
+        try:
+            await grants.replace_item(
+                item=approval_id,
+                body=grant,
+                etag=grant.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 412:
+                raise
+            current = await grants.read_item(
+                item=approval_id,
+                partition_key=approval_id,
+            )
+            if current.get("status") != "cancelled":
+                return _failure("Approval state changed before cancellation")
+        return {
+            "success": True,
+            "submitted": False,
+            "cancelled": True,
+            "duplicate": False,
+            "request_id": "",
+            "submitted_at": "",
+            "message": "出張申請の送信をキャンセルしました。",
+        }
 
     idempotency_key = str(grant["idempotency_key"])
     request_id = (
@@ -485,7 +558,7 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
         "approval_grant_id": approval_id,
         "idempotency_key": idempotency_key,
         "plan_hash": grant["plan_hash"],
-        "approval_mode": "prompt_agent_mcp",
+        "approval_mode": grant.get("approval_mode", "prompt_agent_mcp"),
         "status": "submitted",
         "submitted_at": submitted_at,
         "application_text": grant["application_text"],
@@ -525,6 +598,8 @@ async def submit_travel_request_with_approval(arguments: dict) -> dict:
     )
     return {
         "success": True,
+        "submitted": True,
+        "cancelled": False,
         "duplicate": False,
         "request_id": request_id,
         "submitted_at": submitted_at,

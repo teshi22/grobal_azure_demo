@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
-import re
 import uuid
 from typing import Any
 
 from azure.cosmos.exceptions import CosmosHttpResponseError
 
 from app.services.cosmos import (
-    get_approval_grant_store,
     get_conversation_store,
     get_event_store,
 )
@@ -25,17 +22,8 @@ from app.services.foundry import (
 
 logger = logging.getLogger(__name__)
 
-_APPROVAL_WORDS = frozenset(
-    {"ok", "yes", "y", "はい", "確定", "進めて", "大丈夫", "承認"}
-)
-_REQUEST_INFO_TYPES = frozenset(
-    {
-        "clarification",
-        "request_confirmation",
-        "plan_review",
-        "submit_confirmation",
-    }
-)
+
+
 def _raise_for_response_error(response: dict[str, Any]) -> None:
     error = response.get("error")
     if not error and response.get("status") != "failed":
@@ -59,15 +47,6 @@ def _loads_object(value: Any) -> dict[str, Any]:
     raise ValueError("Expected a JSON object")
 
 
-def _plan_hash(plan: dict[str, Any]) -> str:
-    serialized = json.dumps(
-        plan,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
 def _extract_request_info(
     response: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
@@ -76,67 +55,23 @@ def _extract_request_info(
             continue
 
         arguments = _loads_object(item.get("arguments", "{}"))
-        if "request_event" in arguments:
-            request_event = _loads_object(arguments["request_event"])
-            payload = _loads_object(request_event.get("data", request_event))
-        else:
-            payload = arguments
-        request_type = str(payload.get("type", ""))
-        if request_type not in _REQUEST_INFO_TYPES:
-            raise ValueError(f"Unsupported HITL request type: {request_type}")
-        message = str(
-            payload.get("message")
-            or payload.get("question")
-            or "入力を確認してください。"
+        request_event = _loads_object(
+            arguments.get("request_event", arguments)
         )
+        payload = _loads_object(request_event.get("data", request_event))
+        request_type = str(payload.get("type", ""))
+        if not request_type:
+            raise ValueError("HITL request has no type")
+        message = str(payload.get("message") or "入力を確認してください。")
         event_data = payload.get("data")
         if not isinstance(event_data, dict):
             event_data = {}
-        if request_type == "clarification":
-            event_data = {
-                **event_data,
-                "question": message,
-                "missing_fields": payload.get(
-                    "missing_fields",
-                    event_data.get("missing_fields", []),
-                ),
-            }
-        elif request_type == "request_confirmation":
-            if not event_data:
-                event_data = payload.get("fields", {})
-        elif request_type == "plan_review":
-            if not event_data:
-                event_data = _loads_object(payload.get("plan_json", "{}"))
-        elif request_type == "submit_confirmation":
-            plan = event_data.get("plan")
-            if not isinstance(plan, dict):
-                plan = _loads_object(payload.get("plan_json", "{}"))
-            plan_hash = str(
-                event_data.get("plan_hash")
-                or payload.get("plan_hash")
-                or _plan_hash(plan)
-            )
-            event_data = {
-                **event_data,
-                "application_text": str(
-                    event_data.get("application_text")
-                    or payload.get("application_text", "")
-                ),
-                "plan": plan,
-                "policy_result": str(
-                    event_data.get("policy_result")
-                    or payload.get("policy_narrative", "")
-                ),
-                "plan_hash": plan_hash,
-            }
 
         pending = {
             "call_id": str(item.get("call_id", "")),
             "request_id": str(
                 arguments.get("request_id") or item.get("call_id", "")
             ),
-            "type": request_type,
-            "payload": {**payload, "data": event_data},
         }
         if not pending["call_id"]:
             raise ValueError("request_info function call has no call_id")
@@ -147,10 +82,6 @@ def _extract_request_info(
         }
         return pending, event
     return None
-
-
-def _approved(content: str) -> bool:
-    return content.strip().lower() in _APPROVAL_WORDS
 
 
 def _conversation_route(conversation: dict[str, Any]) -> str:
@@ -173,7 +104,7 @@ def _invoke_for_conversation(
     message: str | None = None,
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
-    function_output: dict[str, Any] | None = None,
+    function_output: str | dict[str, Any] | None = None,
 ):
     if scenario == "agent_framework_workflow":
         return invoke_hosted_agent(
@@ -191,83 +122,6 @@ def _invoke_for_conversation(
             previous_response_id=previous_response_id,
         )
     raise ValueError(f"Unsupported conversation scenario: {scenario}")
-
-
-async def _build_function_output(
-    *,
-    content: str,
-    pending: dict[str, Any],
-    user_id: str,
-    conversation_id: str,
-    scenario: str,
-) -> dict[str, Any]:
-    request_type = pending["type"]
-    approved = _approved(content)
-
-    if request_type == "clarification":
-        return {"answer": content.strip()}
-    if request_type == "request_confirmation":
-        return {
-            "confirmed": approved,
-            "revision": "" if approved else content.strip(),
-        }
-    if request_type == "plan_review":
-        return {
-            "approved": approved,
-            "feedback": "" if approved else content.strip(),
-        }
-    if request_type != "submit_confirmation":
-        raise ValueError(f"Unsupported pending request: {request_type}")
-
-    if not approved:
-        return {
-            "approved": False,
-            "approval_grant_id": "",
-            "idempotency_key": "",
-        }
-
-    payload_data = pending.get("payload", {}).get("data", {})
-    plan_hash = str(payload_data.get("plan_hash", ""))
-    if not plan_hash:
-        raise ValueError("Submission confirmation has no plan hash")
-    grant = await get_approval_grant_store().issue(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        call_id=pending["call_id"],
-        plan_hash=plan_hash,
-    )
-    return {
-        "approved": True,
-        "approval_grant_id": grant["id"],
-        "idempotency_key": grant["idempotency_key"],
-    }
-
-
-def _submission_event_data(pending: dict[str, Any]) -> dict[str, Any]:
-    data = pending.get("payload", {}).get("data", {})
-    if not isinstance(data, dict):
-        raise ValueError("Submission confirmation data is invalid")
-    plan = data.get("plan")
-    if not isinstance(plan, dict):
-        raise ValueError("Submission confirmation has no travel plan")
-    application_text = str(data.get("application_text", "")).strip()
-    policy_result = str(data.get("policy_result", "")).strip()
-    plan_hash = str(data.get("plan_hash", "")).strip()
-    if not application_text:
-        raise ValueError("Submission confirmation has no application text")
-    if not plan_hash:
-        raise ValueError("Submission confirmation has no plan hash")
-    return {
-        "application_text": application_text,
-        "plan": plan,
-        "policy_result": policy_result,
-        "plan_hash": plan_hash,
-    }
-
-
-def _request_id_from_output(output: str) -> str:
-    match = re.search(r"申請番号:\s*([A-Z0-9-]+)", output)
-    return match.group(1) if match else ""
 
 
 async def process_message(
@@ -294,13 +148,6 @@ async def process_message(
                 "Reset it to start a Prompt Agent-only conversation."
             )
         if pending:
-            function_output = await _build_function_output(
-                content=content,
-                pending=pending,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                scenario=scenario,
-            )
             response = await asyncio.to_thread(
                 _invoke_for_conversation,
                 scenario=scenario,
@@ -308,7 +155,7 @@ async def process_message(
                 user_id=user_id,
                 previous_response_id=conversation.get("foundry_response_id"),
                 function_call_id=pending["call_id"],
-                function_output=function_output,
+                function_output=content.strip(),
             )
         else:
             response = await asyncio.to_thread(
@@ -387,21 +234,10 @@ async def process_message(
             active_message=None,
             processing_lease_until=None,
         )
-        completion_event: dict[str, Any] = {"output": output}
-        if pending and pending.get("type") == "submit_confirmation":
-            data = _submission_event_data(pending)
-            request_id = _request_id_from_output(output)
-            completion_event.update(
-                {
-                    "request_id": request_id,
-                    "plan": data["plan"],
-                    "policy_display": data["policy_result"],
-                }
-            )
         await events.append(
             conversation_id,
             "complete",
-            completion_event,
+            {"output": output},
             message_id=message_id,
         )
     except Exception as exc:

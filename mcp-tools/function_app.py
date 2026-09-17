@@ -64,7 +64,7 @@ MCP_TOOLS = [
     {
         "name": "prepare_travel_request_submission",
         "description": (
-            "単一Prompt Agentの申請内容を固定し、最終確認用の短命approvalを作成する"
+            "Agentの申請内容を固定し、最終確認用の短命approvalを作成する"
         ),
         "inputSchema": {
             "type": "object",
@@ -97,7 +97,7 @@ MCP_TOOLS = [
     {
         "name": "submit_travel_request_with_approval",
         "description": (
-            "MCPで固定した申請を、利用者の明示承認後に登録する"
+            "MCPで固定した申請への回答を検証し、明示承認なら登録する"
         ),
         "inputSchema": {
             "type": "object",
@@ -106,15 +106,14 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": "prepare_travel_request_submissionが返した短命approval ID",
                 },
-                "user_confirmed": {
-                    "type": "boolean",
-                    "const": True,
-                    "description": "Prompt Agentが明示的な利用者承認を確認したこと",
+                "confirmation_text": {
+                    "type": "string",
+                    "description": "加工していない利用者の最終回答",
                 },
             },
             "required": [
                 "approval_id",
-                "user_confirmed",
+                "confirmation_text",
             ],
             "additionalProperties": False,
         },

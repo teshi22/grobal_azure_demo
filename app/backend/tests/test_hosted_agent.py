@@ -12,15 +12,7 @@ os.environ.setdefault(
 from app.services import hosted_agent
 from app.config import settings
 from app.services import foundry
-from app.services.hosted_agent import (
-    _build_function_output,
-    _extract_request_info,
-)
-from travel_agent.models import (
-    PlanReviewRequest,
-    RequestConfirmationRequest,
-    SubmissionConfirmationRequest,
-)
+from app.services.hosted_agent import _extract_request_info
 
 
 def _response(request_data: dict) -> dict:
@@ -43,10 +35,6 @@ def _response(request_data: dict) -> dict:
             }
         ]
     }
-
-
-def _serialized_response(payload: str) -> dict:
-    return _response(json.loads(payload))
 
 
 class _CaptureResponses:
@@ -133,95 +121,135 @@ def test_single_prompt_initial_turn_uses_modeless_input(monkeypatch):
     assert "extra_headers" not in responses.kwargs
 
 
-def test_extracts_request_confirmation_from_workflow_dataclass_shape():
+def test_hosted_resume_forwards_raw_user_input(monkeypatch):
+    responses = _CaptureResponses()
+    monkeypatch.setattr(
+        foundry,
+        "get_hosted_responses_client",
+        lambda: responses,
+    )
+
+    foundry.invoke_hosted_agent(
+        conversation_id="conversation-1",
+        user_id="user-1",
+        previous_response_id="response-1",
+        function_call_id="call-1",
+        function_output="OK",
+    )
+
+    assert responses.kwargs["input"] == [
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": "OK",
+        }
+    ]
+
+
+def test_extracts_opaque_hitl_payload_without_business_transformation():
+    payload = {
+        "type": "request_confirmation",
+        "message": "この内容で調べますか？",
+        "data": {
+            "departure": "大阪",
+            "destination": "東京",
+        },
+    }
     result = _extract_request_info(
-        _response(
-            {
-                "type": "request_confirmation",
-                "enriched_request": "出発地: 大阪",
-                "fields": {
-                    "departure": "大阪",
-                    "destination": "東京",
+        _response(payload)
+    )
+    assert result is not None
+    pending, event = result
+    assert pending == {
+        "call_id": "call-1",
+        "request_id": "request-1",
+    }
+    assert event == payload
+
+
+def test_extracts_new_hitl_types_without_bff_changes():
+    payload = {
+        "type": "manager_review",
+        "message": "上長確認が必要です。",
+        "data": {"department": "営業"},
+    }
+    result = _extract_request_info(_response(payload))
+    assert result is not None
+    _, event = result
+    assert event == payload
+
+
+def test_process_message_forwards_pending_user_input_without_interpreting_it(
+    monkeypatch,
+):
+    invocations = []
+    emitted = []
+
+    class Store:
+        async def get_owned(self, conversation_id, user_id):
+            return {
+                "id": conversation_id,
+                "user_id": user_id,
+                "scenario": "agent_framework_workflow",
+                "foundry_response_id": "response-1",
+                "pending_request": {
+                    "call_id": "call-1",
+                    "request_id": "request-1",
                 },
             }
-        )
-    )
-    assert result is not None
-    pending, event = result
-    assert pending["call_id"] == "call-1"
-    assert pending["request_id"] == "request-1"
-    assert event["type"] == "request_confirmation"
-    assert event["data"]["destination"] == "東京"
 
+        async def update(self, conversation_id, **changes):
+            assert changes["status"] == "completed"
 
-def test_extracts_submission_payload_for_ui_and_grant():
-    plan = {"departure": "大阪", "destination": "東京"}
-    result = _extract_request_info(
-        _response(
-            {
-                "type": "submit_confirmation",
-                "application_text": "申請書",
-                "plan_json": json.dumps(plan, ensure_ascii=False),
-                "policy_narrative": "規程適合",
-                "plan_hash": "abc123",
+    class Events:
+        async def append(self, conversation_id, event_type, data, **kwargs):
+            emitted.append((event_type, data))
+
+    class Response:
+        output_text = "出張申請の送信をキャンセルしました。"
+
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-2",
+                "status": "completed",
+                "output_text": self.output_text,
+                "output": [],
             }
+
+    def fake_hosted(**kwargs):
+        invocations.append(kwargs)
+        return Response()
+
+    monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
+    monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(hosted_agent, "invoke_hosted_agent", fake_hosted)
+
+    asyncio.run(
+        hosted_agent.process_message(
+            conversation_id="conversation-1",
+            user_id="user-1",
+            content="キャンセル",
+            message_id="message-1",
+            idempotency_key="key-1",
         )
     )
-    assert result is not None
-    pending, event = result
-    assert pending["payload"]["data"]["plan_hash"] == "abc123"
-    assert event["data"]["plan"] == plan
-    assert event["data"]["policy_result"] == "規程適合"
 
-
-def test_extracts_serialized_request_confirmation_payload():
-    result = _extract_request_info(
-        _serialized_response(
-            RequestConfirmationRequest(
-                enriched_request="出発地: 大阪",
-                fields={"departure": "大阪", "destination": "東京"},
-            ).convert_to_payload()
+    assert invocations == [
+        {
+            "conversation_id": "conversation-1",
+            "user_id": "user-1",
+            "message": None,
+            "previous_response_id": "response-1",
+            "function_call_id": "call-1",
+            "function_output": "キャンセル",
+        }
+    ]
+    assert emitted == [
+        (
+            "complete",
+            {"output": "出張申請の送信をキャンセルしました。"},
         )
-    )
-    assert result is not None
-    _, event = result
-    assert event["data"]["destination"] == "東京"
-
-
-def test_extracts_serialized_plan_review_payload():
-    result = _extract_request_info(
-        _serialized_response(
-            PlanReviewRequest(
-                plan_json=json.dumps(
-                    {"departure": "大阪", "destination": "東京"},
-                    ensure_ascii=False,
-                )
-            ).convert_to_payload()
-        )
-    )
-    assert result is not None
-    _, event = result
-    assert event["data"]["departure"] == "大阪"
-
-
-def test_extracts_serialized_submission_payload():
-    result = _extract_request_info(
-        _serialized_response(
-            SubmissionConfirmationRequest(
-                application_text="申請書",
-                plan_json=json.dumps(
-                    {"departure": "大阪", "destination": "東京"},
-                    ensure_ascii=False,
-                ),
-                policy_narrative="規程適合",
-                plan_hash="abc123",
-            ).convert_to_payload()
-        )
-    )
-    assert result is not None
-    pending, event = result
-    assert pending["payload"]["data"]["plan_hash"] == "abc123"
-    assert event["data"]["application_text"] == "申請書"
+    ]
 
 
 def test_raises_for_failed_hosted_agent_response():
@@ -235,50 +263,6 @@ def test_raises_for_failed_hosted_agent_response():
                 },
             }
         )
-
-
-def test_submission_approval_issues_grant_from_normalized_payload(monkeypatch):
-    result = _extract_request_info(
-        _response(
-            {
-                "type": "submit_confirmation",
-                "application_text": "申請書",
-                "plan_json": json.dumps(
-                    {"departure": "大阪", "destination": "東京"},
-                    ensure_ascii=False,
-                ),
-                "policy_narrative": "規程適合",
-                "plan_hash": "abc123",
-            }
-        )
-    )
-    assert result is not None
-    pending, _ = result
-
-    class GrantStore:
-        async def issue(self, **kwargs):
-            assert kwargs["plan_hash"] == "abc123"
-            return {"id": "grant-1", "idempotency_key": "key-1"}
-
-    monkeypatch.setattr(
-        hosted_agent,
-        "get_approval_grant_store",
-        GrantStore,
-    )
-    output = asyncio.run(
-        hosted_agent._build_function_output(
-            content="はい",
-            pending=pending,
-            user_id="user-1",
-            conversation_id="conversation-1",
-            scenario="agent_framework_workflow",
-        )
-    )
-    assert output == {
-        "approved": True,
-        "approval_grant_id": "grant-1",
-        "idempotency_key": "key-1",
-    }
 
 
 def test_processes_claimed_durable_message(monkeypatch):

@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     cosmos_event_container: str = "conversation-events"
     cosmos_conversation_container: str = "conversations"
     cosmos_travel_request_container: str = "travel-requests"
-    cosmos_approval_grant_container: str = "approval-grants"
     cosmos_evaluation_case_container: str = "evaluation-cases"
     cosmos_evaluation_run_container: str = "evaluation-runs"
     cosmos_evaluation_result_container: str = "evaluation-results"

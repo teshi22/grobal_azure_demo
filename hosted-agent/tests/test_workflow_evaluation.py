@@ -155,9 +155,14 @@ def test_evaluation_complete_path_stops_at_draft_without_mcp(monkeypatch):
         planner = _FakeAgent(json.dumps(plan, ensure_ascii=False))
         policy = _FakeAgent("規程に適合しています。")
         approval = _FakeAgent("顧客会議のため大阪へ出張します。")
+        prepare = AsyncMock()
         submit = AsyncMock()
         monkeypatch.setattr(
-            "travel_agent.executors.submit_travel_request",
+            "travel_agent.executors.prepare_travel_request_submission",
+            prepare,
+        )
+        monkeypatch.setattr(
+            "travel_agent.executors.submit_travel_request_with_approval",
             submit,
         )
 
@@ -192,6 +197,7 @@ def test_evaluation_complete_path_stops_at_draft_without_mcp(monkeypatch):
         assert len(planner.calls) == 1
         assert len(policy.calls) == 1
         assert len(approval.calls) == 1
+        prepare.assert_not_awaited()
         submit.assert_not_awaited()
         assert all(
             content.type != "function_call"

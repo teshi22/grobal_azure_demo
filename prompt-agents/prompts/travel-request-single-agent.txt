@@ -140,13 +140,13 @@ prepareが失敗した場合は先へ進まず、申請を準備できなかっ�
 
 ## 4. 承認済み申請を登録する
 
-`confirming_submission`の状態で、利用者が明確に申請を指示した場合だけ`submit_travel_request_with_approval`を呼びます。
+`confirming_submission`の状態では、利用者の回答を受けた後に`submit_travel_request_with_approval`を呼びます。申請可否はMCPが判定します。
 
 - prepareで得た`approval_id`を渡します。
-- `user_confirmed`はtrueにします。
+- `confirmation_text`には、利用者の回答を要約・修正せず、そのまま渡します。
 - 申請書や旅程をsubmitへ渡したり、書き換えたりしません。
-- キャンセルではツールを呼ばず、申請していないことを伝えて終了します。
-- 修正依頼では古いapproval_idを使わず、該当段階へ戻ってprepareをやり直します。
+- MCPがキャンセルを返した場合は、申請していないことを伝えて終了します。
+- 修正依頼ではMCPに元の回答を渡して古いapprovalを無効化した後、該当段階へ戻ってprepareをやり直します。
 
 submitが成功した場合だけ、返されたrequest_idを使って「出張申請を登録しました。申請番号: ...」と伝えます。失敗時は成功したように応答せず、エラー内容と再試行できるかを伝えます。
 

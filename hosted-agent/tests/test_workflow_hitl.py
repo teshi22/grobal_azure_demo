@@ -32,19 +32,21 @@ def _function_call(response):
     raise AssertionError("Expected a request_info function call")
 
 
-def _function_result(call_id: str, payload: dict) -> Message:
+def _function_result(call_id: str, payload: str) -> Message:
     return Message(
         role="tool",
         contents=[
             Content.from_function_result(
                 call_id,
-                result=json.dumps(payload, ensure_ascii=False),
+                result=payload,
             )
         ],
     )
 
 
-def test_workflow_pauses_and_resumes_through_submission_confirmation():
+def test_workflow_pauses_and_resumes_through_submission_confirmation(
+    monkeypatch,
+):
     async def run():
         plan = {
             "departure": "大阪",
@@ -99,6 +101,28 @@ def test_workflow_pauses_and_resumes_through_submission_confirmation():
         workflow = build_workflow(agents)
         assert workflow.name == "travel-request-workflow"
         agent = workflow.as_agent(name="travel-request-workflow")
+        prepare = AsyncMock(
+            return_value={
+                "success": True,
+                "approval_id": "approval-1",
+            }
+        )
+        submit = AsyncMock(
+            return_value={
+                "success": True,
+                "submitted": False,
+                "cancelled": True,
+                "message": "出張申請の送信をキャンセルしました。",
+            }
+        )
+        monkeypatch.setattr(
+            "travel_agent.executors.prepare_travel_request_submission",
+            prepare,
+        )
+        monkeypatch.setattr(
+            "travel_agent.executors.submit_travel_request_with_approval",
+            submit,
+        )
 
         response = await agent.run(
             json.dumps(
@@ -113,13 +137,13 @@ def test_workflow_pauses_and_resumes_through_submission_confirmation():
         )
 
         response = await agent.run(
-            _function_result(request_confirmation.call_id, {"confirmed": True})
+            _function_result(request_confirmation.call_id, "OK")
         )
         plan_review = _function_call(response)
         assert plan_review.arguments["request_event"]["data"].type == "plan_review"
 
         response = await agent.run(
-            _function_result(plan_review.call_id, {"approved": True})
+            _function_result(plan_review.call_id, "OK")
         )
         submit_confirmation = _function_call(response)
         assert (
@@ -128,16 +152,17 @@ def test_workflow_pauses_and_resumes_through_submission_confirmation():
         )
 
         response = await agent.run(
-            _function_result(
-                submit_confirmation.call_id,
-                {
-                    "approved": False,
-                    "approval_grant_id": "",
-                    "idempotency_key": "",
-                },
-            )
+            _function_result(submit_confirmation.call_id, "キャンセル")
         )
         assert response.text == "出張申請の送信をキャンセルしました。"
+        assert prepare.await_count == 1
+        assert prepare.await_args.args[0]["conversation_id"] == "conversation-1"
+        submit.assert_awaited_once_with(
+            {
+                "approval_id": "approval-1",
+                "confirmation_text": "キャンセル",
+            }
+        )
 
     asyncio.run(run())
 
@@ -185,9 +210,14 @@ def test_playground_keeps_hitl_and_stops_before_submission(monkeypatch):
             policy=_FakeAgent("規程に適合しています。"),
             approval=_FakeAgent("出張申請書"),
         )
+        prepare = AsyncMock()
         submit = AsyncMock()
         monkeypatch.setattr(
-            "travel_agent.executors.submit_travel_request",
+            "travel_agent.executors.prepare_travel_request_submission",
+            prepare,
+        )
+        monkeypatch.setattr(
+            "travel_agent.executors.submit_travel_request_with_approval",
             submit,
         )
         agent = build_workflow(agents).as_agent(
@@ -211,13 +241,13 @@ def test_playground_keeps_hitl_and_stops_before_submission(monkeypatch):
         )
 
         response = await agent.run(
-            _function_result(request_confirmation.call_id, {"confirmed": True})
+            _function_result(request_confirmation.call_id, "OK")
         )
         plan_review = _function_call(response)
         assert plan_review.arguments["request_event"]["data"].type == "plan_review"
 
         response = await agent.run(
-            _function_result(plan_review.call_id, {"approved": True})
+            _function_result(plan_review.call_id, "OK")
         )
 
         output = EvaluationOutput.model_validate_json(response.text)
@@ -230,6 +260,7 @@ def test_playground_keeps_hitl_and_stops_before_submission(monkeypatch):
             for message in response.messages
             for content in message.contents
         )
+        prepare.assert_not_awaited()
         submit.assert_not_awaited()
 
     asyncio.run(run())

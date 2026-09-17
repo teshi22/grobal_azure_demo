@@ -249,6 +249,7 @@ class ApprovalDocument(BaseModel):
     plan_json: str
     policy_narrative: str
     plan_hash: str
+    approval_id: str = ""
 
 
 EvaluationStatus = Literal[
@@ -313,17 +314,19 @@ class EvaluationOutput(BaseModel):
 
 @dataclass
 class ClarificationRequest:
-    type: str = field(init=False, default="clarification")
     question: str
     missing_fields: list[str]
     original_input: str
+    message: str
+    data: dict[str, Any]
+    type: str = field(init=False, default="clarification")
 
     def convert_to_payload(self) -> str:
         return json.dumps(
             {
-                "type": "clarification",
-                "message": self.question,
-                "missing_fields": self.missing_fields,
+                "type": self.type,
+                "message": self.message,
+                "data": self.data,
             },
             ensure_ascii=False,
         )
@@ -344,16 +347,18 @@ class ClarificationResponse:
 
 @dataclass
 class RequestConfirmationRequest:
-    type: str = field(init=False, default="request_confirmation")
     enriched_request: str
     fields: dict[str, str]
+    message: str
+    data: dict[str, Any]
+    type: str = field(init=False, default="request_confirmation")
 
     def convert_to_payload(self) -> str:
         return json.dumps(
             {
-                "type": "request_confirmation",
-                "message": "以下の内容で旅程を検索します。よろしいですか？",
-                "data": self.fields,
+                "type": self.type,
+                "message": self.message,
+                "data": self.data,
             },
             ensure_ascii=False,
         )
@@ -382,15 +387,17 @@ class RequestConfirmationResponse:
 
 @dataclass
 class PlanReviewRequest:
-    type: str = field(init=False, default="plan_review")
     plan_json: str
+    message: str
+    data: dict[str, Any]
+    type: str = field(init=False, default="plan_review")
 
     def convert_to_payload(self) -> str:
         return json.dumps(
             {
-                "type": "plan_review",
-                "message": "この旅程プランでよろしいですか？",
-                "data": json.loads(self.plan_json),
+                "type": self.type,
+                "message": self.message,
+                "data": self.data,
             },
             ensure_ascii=False,
         )
@@ -419,23 +426,20 @@ class PlanReviewResponse:
 
 @dataclass
 class SubmissionConfirmationRequest:
-    type: str = field(init=False, default="submit_confirmation")
+    approval_id: str
     application_text: str
     plan_json: str
     policy_narrative: str
-    plan_hash: str
+    message: str
+    data: dict[str, Any]
+    type: str = field(init=False, default="submit_confirmation")
 
     def convert_to_payload(self) -> str:
         return json.dumps(
             {
-                "type": "submit_confirmation",
-                "message": "旅費規程に適合しました。申請を送信しますか？",
-                "data": {
-                    "application_text": self.application_text,
-                    "plan": json.loads(self.plan_json),
-                    "policy_result": self.policy_narrative,
-                    "plan_hash": self.plan_hash,
-                },
+                "type": self.type,
+                "message": self.message,
+                "data": self.data,
             },
             ensure_ascii=False,
         )
@@ -443,15 +447,21 @@ class SubmissionConfirmationRequest:
 
 @dataclass
 class SubmissionConfirmationResponse:
-    approved: bool
-    approval_grant_id: str = ""
-    idempotency_key: str = ""
+    confirmation_text: str
 
     @staticmethod
     def convert_from_payload(payload: str) -> "SubmissionConfirmationResponse":
-        data = json.loads(payload)
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return SubmissionConfirmationResponse(
+                confirmation_text=payload.strip(),
+            )
         return SubmissionConfirmationResponse(
-            approved=bool(data.get("approved", False)),
-            approval_grant_id=str(data.get("approval_grant_id", "")).strip(),
-            idempotency_key=str(data.get("idempotency_key", "")).strip(),
+            confirmation_text=str(
+                data.get("confirmation_text")
+                or data.get("input")
+                or data.get("answer")
+                or ""
+            ).strip(),
         )

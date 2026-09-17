@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -28,7 +27,6 @@ _credential: DefaultAzureCredential | None = None
 _conversation_store: ConversationStore | None = None
 _event_store: EventStore | None = None
 _travel_request_store: TravelRequestStore | None = None
-_approval_grant_store: ApprovalGrantStore | None = None
 _evaluation_case_store: EvaluationCaseStore | None = None
 _evaluation_run_store: EvaluationRunStore | None = None
 _evaluation_result_store: EvaluationResultStore | None = None
@@ -62,7 +60,7 @@ def get_cosmos_client() -> CosmosClient:
 async def close_cosmos_client() -> None:
     global _cosmos_client, _credential
     global _conversation_store, _event_store, _travel_request_store
-    global _approval_grant_store, _evaluation_case_store
+    global _evaluation_case_store
     global _evaluation_run_store, _evaluation_result_store
     if _cosmos_client is not None:
         await _cosmos_client.close()
@@ -73,7 +71,6 @@ async def close_cosmos_client() -> None:
     _conversation_store = None
     _event_store = None
     _travel_request_store = None
-    _approval_grant_store = None
     _evaluation_case_store = None
     _evaluation_run_store = None
     _evaluation_result_store = None
@@ -377,58 +374,6 @@ def get_travel_request_store() -> TravelRequestStore:
     if _travel_request_store is None:
         _travel_request_store = TravelRequestStore()
     return _travel_request_store
-
-
-class ApprovalGrantStore:
-    """Short-lived grants issued after an authenticated HITL approval."""
-
-    def __init__(self):
-        self._container = _get_container(settings.cosmos_approval_grant_container)
-
-    async def issue(
-        self,
-        *,
-        user_id: str,
-        conversation_id: str,
-        call_id: str,
-        plan_hash: str,
-        ttl_minutes: int = 10,
-    ) -> dict:
-        grant_id = hashlib.sha256(
-            f"{conversation_id}:{call_id}".encode("utf-8")
-        ).hexdigest()
-        now = datetime.now(timezone.utc)
-        item = {
-            "id": grant_id,
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "call_id": call_id,
-            "plan_hash": plan_hash,
-            "idempotency_key": hashlib.sha256(
-                f"travel-request:{grant_id}".encode("utf-8")
-            ).hexdigest(),
-            "status": "issued",
-            "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(minutes=ttl_minutes)).isoformat(),
-            "ttl": ttl_minutes * 60,
-        }
-        try:
-            await self._container.create_item(item, if_none_match="*")
-            return item
-        except CosmosHttpResponseError as exc:
-            if exc.status_code != 409:
-                raise
-            return await self._container.read_item(
-                item=grant_id,
-                partition_key=grant_id,
-            )
-
-
-def get_approval_grant_store() -> ApprovalGrantStore:
-    global _approval_grant_store
-    if _approval_grant_store is None:
-        _approval_grant_store = ApprovalGrantStore()
-    return _approval_grant_store
 
 
 def _now() -> str:

@@ -13,7 +13,10 @@ from agent_framework import Executor, Message, handler, response_handler
 from .agents import TravelAgents
 from .date_resolver import resolve_schedule
 from .evaluation import EvaluationMode
-from .mcp_client import submit_travel_request
+from .mcp_client import (
+    prepare_travel_request_submission,
+    submit_travel_request_with_approval,
+)
 from .models import (
     ApprovalDocument,
     ClarificationRequest,
@@ -154,6 +157,11 @@ class ClarificationStep(Executor):
                 question=result.question,
                 missing_fields=result.missing_fields,
                 original_input=ctx.get_state("original_input", ""),
+                message=result.question,
+                data={
+                    "question": result.question,
+                    "missing_fields": result.missing_fields,
+                },
             ),
             response_type=str,
         )
@@ -193,6 +201,8 @@ class RequestConfirmationStep(Executor):
             request_data=RequestConfirmationRequest(
                 enriched_request=result.enriched_request,
                 fields=ctx.get_state("request_fields") or {},
+                message="以下の内容で旅程を検索します。よろしいですか？",
+                data=ctx.get_state("request_fields") or {},
             ),
             response_type=str,
         )
@@ -275,7 +285,11 @@ class PlanReviewStep(Executor):
             await ctx.send_message(plan_json, target_id="policy_check")
             return
         await ctx.request_info(
-            request_data=PlanReviewRequest(plan_json=plan_json),
+            request_data=PlanReviewRequest(
+                plan_json=plan_json,
+                message="この旅程プランでよろしいですか？",
+                data=json.loads(plan_json),
+            ),
             response_type=str,
         )
 
@@ -390,6 +404,15 @@ class ApprovalDocumentStep(Executor):
                 self._evaluation.playground_draft(ctx, document, outcome)
             )
             return
+        prepared = await prepare_travel_request_submission(
+            {
+                "application_text": document.application_text,
+                "conversation_id": ctx.get_state("conversation_id", ""),
+                "application_data": json.loads(document.plan_json),
+                "policy_result": document.policy_narrative,
+            }
+        )
+        document.approval_id = str(prepared["approval_id"])
         await ctx.send_message(document)
 
 
@@ -402,10 +425,16 @@ class SubmissionConfirmationStep(Executor):
         ctx.set_state("approval_document", document.model_dump())
         await ctx.request_info(
             request_data=SubmissionConfirmationRequest(
+                approval_id=document.approval_id,
                 application_text=document.application_text,
                 plan_json=document.plan_json,
                 policy_narrative=document.policy_narrative,
-                plan_hash=document.plan_hash,
+                message="旅費規程に適合しました。申請を送信しますか？",
+                data={
+                    "application_text": document.application_text,
+                    "plan": json.loads(document.plan_json),
+                    "policy_result": document.policy_narrative,
+                },
             ),
             response_type=str,
         )
@@ -423,19 +452,10 @@ class SubmissionConfirmationStep(Executor):
         ctx,
     ) -> None:
         parsed = SubmissionConfirmationResponse.convert_from_payload(response)
-        if not parsed.approved:
-            await ctx.yield_output("出張申請の送信をキャンセルしました。")
-            return
-        if not parsed.approval_grant_id or not parsed.idempotency_key:
-            raise ValueError("Approved submission requires grant and idempotency IDs")
         await ctx.send_message(
             {
-                "conversation_id": ctx.get_state("conversation_id", ""),
-                "approval_grant_id": parsed.approval_grant_id,
-                "idempotency_key": parsed.idempotency_key,
-                "plan_hash": original.plan_hash,
-                "application_text": original.application_text,
-                "application_data": json.loads(original.plan_json),
+                "approval_id": original.approval_id,
+                "confirmation_text": parsed.confirmation_text,
             },
             target_id="submit_travel_request",
         )
@@ -447,7 +467,10 @@ class SubmitTravelRequestStep(Executor):
 
     @handler(input=dict, workflow_output=str)
     async def run(self, submission, ctx) -> None:
-        result = await submit_travel_request(submission)
+        result = await submit_travel_request_with_approval(submission)
+        if not result.get("submitted", False):
+            await ctx.yield_output(str(result["message"]))
+            return
         request_id = str(result.get("request_id", ""))
         document = ctx.get_state("approval_document") or {}
         await ctx.yield_output(

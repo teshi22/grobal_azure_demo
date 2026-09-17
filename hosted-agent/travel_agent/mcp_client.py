@@ -30,7 +30,10 @@ async def _get_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token.token}"}
 
 
-async def submit_travel_request(arguments: dict[str, Any]) -> dict[str, Any]:
+async def _call_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
     if not settings.mcp_tool_endpoint:
         raise RuntimeError("MCP_TOOL_ENDPOINT is not configured")
 
@@ -41,7 +44,7 @@ async def submit_travel_request(arguments: dict[str, Any]) -> dict[str, Any]:
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(
-                "submit_travel_request",
+                tool_name,
                 arguments=arguments,
             )
 
@@ -56,3 +59,25 @@ async def submit_travel_request(arguments: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(str(payload.get("message", "Submission failed")))
     return payload
 
+
+async def prepare_travel_request_submission(
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    return await _call_tool(
+        "prepare_travel_request_submission",
+        arguments,
+    )
+
+
+async def submit_travel_request_with_approval(
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    return await _call_tool(
+        "submit_travel_request_with_approval",
+        arguments,
+    )
+
+
+async def submit_travel_request(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility wrapper for older workflow versions."""
+    return await _call_tool("submit_travel_request", arguments)

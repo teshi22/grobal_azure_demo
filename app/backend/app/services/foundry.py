@@ -56,7 +56,7 @@ def invoke_conversation_agent(
     message_envelope: dict[str, Any] | None = None,
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
-    function_output: dict[str, Any] | None = None,
+    function_output: str | dict[str, Any] | None = None,
     agent_session_id: str | None = None,
     user_identity: str | None = None,
 ):
@@ -74,11 +74,16 @@ def invoke_conversation_agent(
     if function_output is not None:
         if not function_call_id:
             raise ValueError("function_call_id is required for function output")
+        serialized_output = (
+            function_output
+            if isinstance(function_output, str)
+            else json.dumps(function_output, ensure_ascii=False)
+        )
         response_input: str | list[dict[str, Any]] = [
             {
                 "type": "function_call_output",
                 "call_id": function_call_id,
-                "output": json.dumps(function_output, ensure_ascii=False),
+                "output": serialized_output,
             }
         ]
     else:
@@ -110,7 +115,7 @@ def invoke_hosted_agent(
     message: str | None = None,
     previous_response_id: str | None = None,
     function_call_id: str | None = None,
-    function_output: dict[str, Any] | None = None,
+    function_output: str | dict[str, Any] | None = None,
 ):
     """Start or resume a Hosted Agent response for one authenticated user."""
     return invoke_conversation_agent(

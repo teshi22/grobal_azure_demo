@@ -138,6 +138,7 @@ def test_single_agent_prompt_enforces_conversation_and_tool_order():
     assert "検索結果のスニペットだけで運賃を確定せず" in instructions
     assert "旅程の明示的な承認を得た後だけ" in instructions
     assert "申請書や旅程をsubmitへ渡したり、書き換えたりしません" in instructions
+    assert "`confirmation_text`には、利用者の回答を要約・修正せず" in instructions
     assert instructions.index("## 3. 申請内容を固定") < instructions.index(
         "## 4. 承認済み申請を登録"
     )
