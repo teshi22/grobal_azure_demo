@@ -14,6 +14,7 @@ from agent_framework import Content, Message
 from travel_agent.agents import TravelAgents
 from travel_agent.models import EvaluationOutput
 from travel_agent.workflow import build_workflow
+from travel_agent.workflow_agent import ChatCompatibleWorkflowAgent
 
 
 class _FakeAgent:
@@ -163,6 +164,96 @@ def test_workflow_pauses_and_resumes_through_submission_confirmation(
                 "confirmation_text": "キャンセル",
             }
         )
+
+    asyncio.run(run())
+
+
+def test_chat_compatible_agent_shows_hitl_and_accepts_plain_reply(
+    monkeypatch,
+):
+    async def run():
+        plan = {
+            "departure": "大阪",
+            "destination": "博多",
+            "purpose": "チームミーティング",
+            "schedule": "2026-10-05（月）",
+            "trip_type": "日帰り",
+            "transportation_legs": [
+                {
+                    "direction": "往路",
+                    "method": "新幹線",
+                    "from": "新大阪駅",
+                    "to": "博多駅",
+                    "cost": 15_000,
+                    "fare_type": "指定席",
+                    "source_url": "https://www.navitime.co.jp/transfer/",
+                },
+                {
+                    "direction": "復路",
+                    "method": "新幹線",
+                    "from": "博多駅",
+                    "to": "新大阪駅",
+                    "cost": 15_000,
+                    "fare_type": "指定席",
+                    "source_url": "https://www.navitime.co.jp/transfer/",
+                },
+            ],
+            "transportation_cost": 30_000,
+            "hotel": None,
+            "hotel_cost_per_night": None,
+            "hotel_nights": None,
+            "total_cost": 30_000,
+            "distance_km": 1_200,
+            "travel_time_hours": 5,
+        }
+        agents = TravelAgents(
+            clarifier=_FakeAgent(
+                json.dumps(
+                    {
+                        "departure": "大阪",
+                        "destination": "博多",
+                        "schedule": "2026-10-05",
+                        "purpose": "チームミーティング",
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+            planner=_FakeAgent(json.dumps(plan, ensure_ascii=False)),
+            policy=_FakeAgent("規程に適合しています。"),
+            approval=_FakeAgent("出張申請書"),
+        )
+        agent = ChatCompatibleWorkflowAgent(
+            build_workflow(agents),
+            name="travel-request-workflow",
+        )
+        prepare = AsyncMock(
+            return_value={
+                "success": True,
+                "approval_id": "approval-1",
+            }
+        )
+        monkeypatch.setattr(
+            "travel_agent.executors.prepare_travel_request_submission",
+            prepare,
+        )
+
+        response = await agent.run("10/5に博多出張。チームミーティング")
+        request_confirmation = _function_call(response)
+        assert "以下の内容で旅程を検索します" in response.text
+        assert "博多" in response.text
+
+        response = await agent.run("OK")
+        plan_review = _function_call(response)
+        assert plan_review.call_id != request_confirmation.call_id
+
+        response = await agent.run("OK")
+        submit_confirmation = _function_call(response)
+        assert submit_confirmation.call_id != plan_review.call_id
+        prepare.assert_awaited_once()
+        assert prepare.await_args.args[0]["agent_scenario"] == (
+            "agent_framework_workflow"
+        )
+        assert "conversation_id" not in prepare.await_args.args[0]
 
     asyncio.run(run())
 

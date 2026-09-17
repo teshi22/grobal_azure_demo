@@ -404,13 +404,19 @@ class ApprovalDocumentStep(Executor):
                 self._evaluation.playground_draft(ctx, document, outcome)
             )
             return
+        prepare_arguments = {
+            "application_text": document.application_text,
+            "agent_scenario": "agent_framework_workflow",
+            "application_data": json.loads(document.plan_json),
+            "policy_result": document.policy_narrative,
+        }
+        conversation_id = str(
+            ctx.get_state("conversation_id", "")
+        ).strip()
+        if conversation_id:
+            prepare_arguments["conversation_id"] = conversation_id
         prepared = await prepare_travel_request_submission(
-            {
-                "application_text": document.application_text,
-                "conversation_id": ctx.get_state("conversation_id", ""),
-                "application_data": json.loads(document.plan_json),
-                "policy_result": document.policy_narrative,
-            }
+            prepare_arguments
         )
         document.approval_id = str(prepared["approval_id"])
         await ctx.send_message(document)

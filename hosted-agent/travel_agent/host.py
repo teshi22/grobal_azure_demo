@@ -10,6 +10,7 @@ from .agents import create_agents
 from .checkpoints import CosmosCheckpointStoreProvider
 from .settings import settings
 from .workflow import build_workflow
+from .workflow_agent import ChatCompatibleWorkflowAgent
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -31,7 +32,8 @@ def create_server() -> ResponsesHostServer:
         credential=credential,
         config=settings,
     )
-    workflow_agent = build_workflow(agents).as_agent(
+    workflow_agent = ChatCompatibleWorkflowAgent(
+        build_workflow(agents),
         name="travel-request-workflow"
     )
     return ResponsesHostServer(

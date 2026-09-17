@@ -96,6 +96,8 @@ Prompt Agentは名前だけでなくversionも設定に保存します。プロ�
 
 Single Prompt Agentには`submission`や`playground`などの独自モードはありません。Foundry Playgroundでは通常のチャット文字列だけで会話から申請まで実行できます。Webアプリからは所有者連携のために任意の`conversation_id`を入力へ添えますが、BFF発行トークンは使用しません。
 
+Hosted AgentもFoundry Playgroundから通常のチャットとして直接実行できます。HITLでは確認内容をテキスト表示しながら、BFF向けの`request_info` function callも同時に返します。Playgroundでは「OK」、修正内容、「キャンセル」を次のチャットメッセージとして入力すると、保存済みチェックポイントから処理を再開します。
+
 | 画面 | 用途 |
 |---|---|
 | `/` | 2シナリオのHITL会話とMCP申請 |
@@ -156,7 +158,7 @@ Container Apps の Easy Auth が利用者を Microsoft Entra ID で認証しま�
 
 BFF は所有者が一致する場合だけ、会話の取得、メッセージ送信、SSE 接続、申請一覧取得を許可します。リクエスト本文の `user_id` は信頼しません。
 
-Hosted AgentとSingle Prompt Agentは、それぞれのManaged IdentityでMCPへ接続します。prepareツールは会話ドキュメントから認証済み所有者を解決し、申請書、旅程、規程判定、ハッシュ、冪等性キー、有効期限を短命approvalへ固定します。Foundry Playgroundから会話IDなしで呼ばれた場合だけ、`foundry-prompt-agent`を所有者として扱います。submitツールは、加工前の最終回答、approvalの状態と有効期限を検証し、固定済みデータだけを登録してapprovalを消費済みにします。BFFはapprovalを作成、参照、更新しません。
+Hosted AgentとSingle Prompt Agentは、それぞれのManaged IdentityでMCPへ接続します。prepareツールは会話ドキュメントから認証済み所有者を解決し、申請書、旅程、規程判定、ハッシュ、冪等性キー、有効期限を短命approvalへ固定します。Foundry Playgroundから会話IDなしで呼ばれた場合は、Hosted Agentを`foundry-hosted-agent`、Single Prompt Agentを`foundry-prompt-agent`として区別します。submitツールは、加工前の最終回答、approvalの状態と有効期限を検証し、固定済みデータだけを登録してapprovalを消費済みにします。BFFはapprovalを作成、参照、更新しません。
 
 ## リポジトリはBFF、Hosted Agent、MCPを分離している
 
@@ -335,7 +337,7 @@ az bicep build --file infra/main.bicep
 azd show
 ```
 
-Hosted Agent のスモークテストは、デプロイ後の Responses API を直接呼び、最初の確認要求が `request_info` として返ることを検証します。
+Hosted Agent のスモークテストは、デプロイ後の Responses API を直接呼び、確認要求がチャット本文と`request_info`の両方で返り、通常のチャット返信だけで再開できることを検証します。
 
 ```bash
 python scripts/smoke-hosted-agent.py \

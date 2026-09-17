@@ -23,6 +23,7 @@ from tools.cosmos_client import (
 logger = logging.getLogger(__name__)
 
 _PROMPT_AGENT_FALLBACK_USER = "foundry-prompt-agent"
+_HOSTED_AGENT_FALLBACK_USER = "foundry-hosted-agent"
 _EXPLICIT_APPROVALS = frozenset(
     {
         "ok",
@@ -168,6 +169,12 @@ def _validate_prepare_arguments(arguments: dict) -> str | None:
         not isinstance(conversation_id, str) or not conversation_id.strip()
     ):
         return "conversation_id must be a non-empty string when provided"
+    agent_scenario = arguments.get("agent_scenario")
+    if agent_scenario is not None and agent_scenario not in {
+        "single_prompt_agent",
+        "agent_framework_workflow",
+    }:
+        return "agent_scenario is not supported"
     return None
 
 
@@ -399,6 +406,9 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
     conversation_id = str(arguments.get("conversation_id") or "").strip()
     user_id = _PROMPT_AGENT_FALLBACK_USER
     approval_mode = "prompt_agent_mcp"
+    if arguments.get("agent_scenario") == "agent_framework_workflow":
+        user_id = _HOSTED_AGENT_FALLBACK_USER
+        approval_mode = "hosted_agent_mcp"
     if conversation_id:
         conversations = get_conversation_container()
         try:
@@ -432,7 +442,7 @@ async def prepare_travel_request_submission(arguments: dict) -> dict:
         "conversation_id": conversation_id,
         "plan_hash": _plan_hash(application_data),
         "idempotency_key": hashlib.sha256(
-            f"prompt-agent:{approval_id}".encode("utf-8")
+            f"{approval_mode}:{approval_id}".encode("utf-8")
         ).hexdigest(),
         "approval_mode": approval_mode,
         "status": "awaiting_confirmation",

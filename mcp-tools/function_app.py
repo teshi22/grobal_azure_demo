@@ -77,6 +77,16 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": "アプリ経由の場合だけ指定する会話ID",
                 },
+                "agent_scenario": {
+                    "type": "string",
+                    "enum": [
+                        "single_prompt_agent",
+                        "agent_framework_workflow",
+                    ],
+                    "description": (
+                        "会話IDなしで直接実行する場合のAgentシナリオ"
+                    ),
+                },
                 "application_data": {
                     "description": "最終確認の対象として固定する構造化申請データ",
                     **APPLICATION_DATA_SCHEMA,

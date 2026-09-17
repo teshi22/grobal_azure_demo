@@ -37,6 +37,20 @@ def request_type(call: dict) -> str:
     return str(data.get("type", ""))
 
 
+def response_text(response_payload: dict) -> str:
+    direct = response_payload.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    return "\n".join(
+        str(content.get("text", "")).strip()
+        for item in response_payload.get("output", [])
+        if item.get("type") == "message"
+        for content in item.get("content", [])
+        if content.get("type") == "output_text"
+        and str(content.get("text", "")).strip()
+    )
+
+
 def main() -> int:
     args = parse_args()
     conversation_id = f"smoke-{uuid.uuid4()}"
@@ -71,18 +85,23 @@ def main() -> int:
             )
             print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
             return 1
+        if not response_text(payload):
+            print(
+                "Hosted Agent did not expose the HITL request as chat text.",
+                file=sys.stderr,
+            )
+            print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
+            return 1
 
         first_request_type = request_type(call)
         if first_request_type == "clarification":
-            function_output = {
-                "answer": (
-                    "出発地は東京、目的地は大阪、日程は2026年10月15日の"
-                    "日帰り、目的は顧客会議です。"
-                )
-            }
+            chat_reply = (
+                "出発地は東京、目的地は大阪、日程は2026年10月15日の"
+                "日帰り、目的は顧客会議です。"
+            )
             expected_next_type = "request_confirmation"
         elif first_request_type == "request_confirmation":
-            function_output = {"confirmed": True}
+            chat_reply = "OK"
             expected_next_type = "plan_review"
         else:
             print(
@@ -94,17 +113,7 @@ def main() -> int:
 
         resumed_response = openai_client.responses.create(
             previous_response_id=response.id,
-            input=[
-                {
-                    "type": "function_call_output",
-                    "call_id": call["call_id"],
-                    "output": json.dumps(
-                        function_output,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                }
-            ],
+            input=chat_reply,
             extra_body={"agent_session_id": conversation_id},
         )
     finally:
@@ -122,7 +131,7 @@ def main() -> int:
         return 1
 
     print(
-        "Hosted Agent resumed from "
+        "Hosted Agent displayed and resumed direct chat HITL from "
         f"{first_request_type} to {expected_next_type}."
     )
     return 0

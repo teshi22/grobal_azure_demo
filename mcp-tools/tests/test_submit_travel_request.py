@@ -300,6 +300,69 @@ def test_prompt_agent_prepare_without_app_context_is_standalone(monkeypatch):
     assert created[0]["conversation_id"].startswith("foundry-")
 
 
+def test_hosted_agent_prepare_without_app_context_uses_hosted_identity(
+    monkeypatch,
+):
+    created = []
+
+    class Grants:
+        def __init__(self):
+            self.item = None
+
+        async def create_item(self, item, if_none_match):
+            self.item = copy.deepcopy(item)
+
+        async def read_item(self, item, partition_key):
+            return copy.deepcopy(self.item)
+
+        async def replace_item(
+            self,
+            item,
+            body,
+            etag,
+            match_condition,
+        ):
+            self.item = copy.deepcopy(body)
+
+    class Requests:
+        async def read_item(self, item, partition_key):
+            raise submission.CosmosResourceNotFoundError()
+
+        async def create_item(self, document, if_none_match):
+            created.append(document)
+
+    grants = Grants()
+    monkeypatch.setattr(
+        submission,
+        "get_approval_grant_container",
+        lambda: grants,
+    )
+    monkeypatch.setattr(submission, "get_container", Requests)
+
+    prepared = asyncio.run(
+        submission.prepare_travel_request_submission(
+            {
+                "application_text": "申請書",
+                "agent_scenario": "agent_framework_workflow",
+                "application_data": _day_trip_plan(),
+                "policy_result": "規程適合",
+            }
+        )
+    )
+    result = asyncio.run(
+        submission.submit_travel_request_with_approval(
+            {
+                "approval_id": prepared["approval_id"],
+                "confirmation_text": "申請する",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert created[0]["user_id"] == "foundry-hosted-agent"
+    assert created[0]["approval_mode"] == "hosted_agent_mcp"
+
+
 def test_mcp_cancels_fixed_application_from_raw_user_response(monkeypatch):
     class Grants:
         def __init__(self):
