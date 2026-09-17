@@ -30,7 +30,7 @@ def build_workflow(agents: TravelAgents):
     clarification = ClarificationStep(evaluation)
     request_confirmation = RequestConfirmationStep(evaluation)
     planner = TravelPlannerStep(agents)
-    plan_review = PlanReviewStep(evaluation)
+    plan_review = PlanReviewStep(agents, evaluation)
     policy = PolicyCheckStep(agents)
     policy_replan = PolicyReplanStep()
     approval_document = ApprovalDocumentStep(agents, evaluation)

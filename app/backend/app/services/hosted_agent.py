@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from typing import Any
@@ -23,7 +22,6 @@ from app.services.foundry import (
 logger = logging.getLogger(__name__)
 
 
-
 def _raise_for_response_error(response: dict[str, Any]) -> None:
     error = response.get("error")
     if not error and response.get("status") != "failed":
@@ -37,51 +35,18 @@ def _raise_for_response_error(response: dict[str, Any]) -> None:
     raise RuntimeError(f"Foundry Agent failed ({code}): {message}")
 
 
-def _loads_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        parsed = json.loads(value)
-        if isinstance(parsed, dict):
-            return parsed
-    raise ValueError("Expected a JSON object")
-
-
-def _extract_request_info(
-    response: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    for item in response.get("output", []):
-        if item.get("type") != "function_call" or item.get("name") != "request_info":
-            continue
-
-        arguments = _loads_object(item.get("arguments", "{}"))
-        request_event = _loads_object(
-            arguments.get("request_event", arguments)
-        )
-        payload = _loads_object(request_event.get("data", request_event))
-        request_type = str(payload.get("type", ""))
-        if not request_type:
-            raise ValueError("HITL request has no type")
-        message = str(payload.get("message") or "入力を確認してください。")
-        event_data = payload.get("data")
-        if not isinstance(event_data, dict):
-            event_data = {}
-
-        pending = {
-            "call_id": str(item.get("call_id", "")),
-            "request_id": str(
-                arguments.get("request_id") or item.get("call_id", "")
-            ),
-        }
-        if not pending["call_id"]:
-            raise ValueError("request_info function call has no call_id")
-        event = {
-            "type": request_type,
-            "message": message,
-            "data": event_data,
-        }
-        return pending, event
-    return None
+def _extract_output_text(response: dict[str, Any]) -> str:
+    direct = response.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    return "\n".join(
+        str(content.get("text", "")).strip()
+        for item in response.get("output", [])
+        if item.get("type") == "message"
+        for content in item.get("content", [])
+        if content.get("type") == "output_text"
+        and str(content.get("text", "")).strip()
+    )
 
 
 def _conversation_route(conversation: dict[str, Any]) -> str:
@@ -101,10 +66,8 @@ def _invoke_for_conversation(
     scenario: str,
     conversation_id: str,
     user_id: str,
-    message: str | None = None,
+    message: str,
     previous_response_id: str | None = None,
-    function_call_id: str | None = None,
-    function_output: str | dict[str, Any] | None = None,
 ):
     if scenario == "agent_framework_workflow":
         return invoke_hosted_agent(
@@ -112,8 +75,6 @@ def _invoke_for_conversation(
             user_id=user_id,
             message=message,
             previous_response_id=previous_response_id,
-            function_call_id=function_call_id,
-            function_output=function_output,
         )
     if scenario == "single_prompt_agent":
         return invoke_single_prompt_agent(
@@ -141,94 +102,37 @@ async def process_message(
             raise LookupError("Conversation not found")
 
         scenario = _conversation_route(conversation)
-        pending = conversation.get("pending_request")
-        if scenario == "single_prompt_agent" and pending:
-            raise RuntimeError(
-                "This conversation uses the previous HITL format. "
-                "Reset it to start a Prompt Agent-only conversation."
-            )
-        if pending:
-            response = await asyncio.to_thread(
-                _invoke_for_conversation,
-                scenario=scenario,
-                conversation_id=conversation_id,
-                user_id=user_id,
-                previous_response_id=conversation.get("foundry_response_id"),
-                function_call_id=pending["call_id"],
-                function_output=content.strip(),
-            )
-        else:
-            response = await asyncio.to_thread(
-                _invoke_for_conversation,
-                scenario=scenario,
-                conversation_id=conversation_id,
-                user_id=user_id,
-                message=content,
-                previous_response_id=conversation.get("foundry_response_id"),
-            )
+        response = await asyncio.to_thread(
+            _invoke_for_conversation,
+            scenario=scenario,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            message=content,
+            previous_response_id=conversation.get("foundry_response_id"),
+        )
 
         response_data = response_to_dict(response)
         _raise_for_response_error(response_data)
         response_id = str(response_data.get("id", ""))
-        output = str(
-            response_data.get("output_text")
-            or getattr(response, "output_text", "")
-            or ""
-        ).strip()
-
-        if scenario == "single_prompt_agent":
-            unexpected_callbacks = {
-                "function_call",
-                "mcp_approval_request",
-            }.intersection(
-                str(item.get("type", ""))
-                for item in response_data.get("output", [])
+        output = _extract_output_text(response_data)
+        unexpected_callbacks = {
+            "function_call",
+            "mcp_approval_request",
+        }.intersection(
+            str(item.get("type", ""))
+            for item in response_data.get("output", [])
+        )
+        if unexpected_callbacks:
+            raise RuntimeError(
+                "Agent returned an unsupported callback: "
+                + ", ".join(sorted(unexpected_callbacks))
             )
-            if unexpected_callbacks:
-                raise RuntimeError(
-                    "Single Prompt Agent returned an unsupported callback: "
-                    + ", ".join(sorted(unexpected_callbacks))
-                )
-            if not output:
-                raise RuntimeError("Single Prompt Agent returned no message")
-            await conversations.update(
-                conversation_id,
-                status="ready",
-                foundry_response_id=response_id,
-                pending_request=None,
-                active_message=None,
-                processing_lease_until=None,
-            )
-            await events.append(
-                conversation_id,
-                "agent_response",
-                {"step": "single_prompt_agent", "content": output},
-                message_id=message_id,
-            )
-            return
-
-        request_info = _extract_request_info(response_data)
-        if request_info:
-            next_pending, hitl_event = request_info
-            await conversations.update(
-                conversation_id,
-                status="awaiting_input",
-                foundry_response_id=response_id,
-                pending_request=next_pending,
-                active_message=None,
-                processing_lease_until=None,
-            )
-            await events.append(
-                conversation_id,
-                "hitl_request",
-                hitl_event,
-                message_id=message_id,
-            )
-            return
+        if not output:
+            raise RuntimeError("Agent returned no message")
 
         await conversations.update(
             conversation_id,
-            status="completed",
+            status="ready",
             foundry_response_id=response_id,
             pending_request=None,
             active_message=None,
@@ -236,8 +140,8 @@ async def process_message(
         )
         await events.append(
             conversation_id,
-            "complete",
-            {"output": output},
+            "agent_response",
+            {"step": scenario, "content": output},
             message_id=message_id,
         )
     except Exception as exc:

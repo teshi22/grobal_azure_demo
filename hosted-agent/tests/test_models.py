@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from travel_agent.models import (
@@ -19,7 +21,16 @@ from travel_agent.models import (
 )
 def test_natural_affirmative_reply_is_accepted(reply):
     assert RequestConfirmationResponse.convert_from_payload(reply).confirmed
-    assert PlanReviewResponse.convert_from_payload(reply).approved
+
+
+def test_plan_review_response_requires_structured_agent_decision():
+    decision = PlanReviewResponse.convert_from_payload(
+        '{"approved":true}'
+    )
+
+    assert decision.approved
+    with pytest.raises(json.JSONDecodeError):
+        PlanReviewResponse.convert_from_payload("オッケー")
 
 
 def test_normalizes_verbose_day_trip_type():

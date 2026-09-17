@@ -53,44 +53,14 @@ def get_hosted_responses_client():
 def invoke_conversation_agent(
     *,
     agent_name: str,
-    message_envelope: dict[str, Any] | None = None,
+    message_envelope: dict[str, Any],
     previous_response_id: str | None = None,
-    function_call_id: str | None = None,
-    function_output: str | dict[str, Any] | None = None,
     agent_session_id: str | None = None,
     user_identity: str | None = None,
 ):
-    """Start or resume a durable Foundry Agent response."""
-    provided_inputs = sum(
-        value is not None
-        for value in (
-            message_envelope,
-            function_output,
-        )
-    )
-    if provided_inputs != 1:
-        raise ValueError("Provide exactly one message or function output")
-
-    if function_output is not None:
-        if not function_call_id:
-            raise ValueError("function_call_id is required for function output")
-        serialized_output = (
-            function_output
-            if isinstance(function_output, str)
-            else json.dumps(function_output, ensure_ascii=False)
-        )
-        response_input: str | list[dict[str, Any]] = [
-            {
-                "type": "function_call_output",
-                "call_id": function_call_id,
-                "output": serialized_output,
-            }
-        ]
-    else:
-        response_input = json.dumps(message_envelope, ensure_ascii=False)
-
+    """Start or resume a durable Foundry Agent chat response."""
     kwargs: dict[str, Any] = {
-        "input": response_input,
+        "input": json.dumps(message_envelope, ensure_ascii=False),
         "store": True,
         "stream": False,
     }
@@ -112,25 +82,17 @@ def invoke_hosted_agent(
     *,
     conversation_id: str,
     user_id: str,
-    message: str | None = None,
+    message: str,
     previous_response_id: str | None = None,
-    function_call_id: str | None = None,
-    function_output: str | dict[str, Any] | None = None,
 ):
-    """Start or resume a Hosted Agent response for one authenticated user."""
+    """Start or resume a Hosted Agent with an ordinary chat turn."""
     return invoke_conversation_agent(
         agent_name=settings.hosted_agent_name,
-        message_envelope=(
-            {
-                "conversation_id": conversation_id,
-                "message": message,
-            }
-            if message is not None
-            else None
-        ),
+        message_envelope={
+            "conversation_id": conversation_id,
+            "message": message,
+        },
         previous_response_id=previous_response_id,
-        function_call_id=function_call_id,
-        function_output=function_output,
         agent_session_id=conversation_id,
         user_identity=user_id,
     )
@@ -139,20 +101,16 @@ def invoke_hosted_agent(
 def invoke_single_prompt_agent(
     *,
     conversation_id: str,
-    message: str | None = None,
+    message: str,
     previous_response_id: str | None = None,
 ):
     """Start or resume an interactive Single Prompt Agent conversation."""
     return invoke_conversation_agent(
         agent_name=settings.single_prompt_agent_name,
-        message_envelope=(
-            {
-                "conversation_id": conversation_id,
-                "input": message,
-            }
-            if message is not None
-            else None
-        ),
+        message_envelope={
+            "conversation_id": conversation_id,
+            "input": message,
+        },
         previous_response_id=previous_response_id,
     )
 

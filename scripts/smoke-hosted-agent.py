@@ -18,25 +18,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def request_info_call(response_payload: dict) -> dict | None:
-    for item in response_payload.get("output", []):
-        if (
-            item.get("type") == "function_call"
-            and item.get("name") == "request_info"
-        ):
-            return item
-    return None
-
-
-def request_type(call: dict) -> str:
-    arguments = json.loads(call["arguments"])
-    request_event = arguments.get("request_event", {})
-    data = request_event.get("data", {})
-    if isinstance(data, str):
-        data = json.loads(data)
-    return str(data.get("type", ""))
-
-
 def response_text(response_payload: dict) -> str:
     direct = response_payload.get("output_text")
     if isinstance(direct, str) and direct.strip():
@@ -48,6 +29,13 @@ def response_text(response_payload: dict) -> str:
         for content in item.get("content", [])
         if content.get("type") == "output_text"
         and str(content.get("text", "")).strip()
+    )
+
+
+def has_function_call(response_payload: dict) -> bool:
+    return any(
+        item.get("type") == "function_call"
+        for item in response_payload.get("output", [])
     )
 
 
@@ -77,38 +65,37 @@ def main() -> int:
             extra_body={"agent_session_id": conversation_id},
         )
         payload = response.model_dump(mode="json")
-        call = request_info_call(payload)
-        if not call:
+        first_text = response_text(payload)
+        if not first_text:
             print(
-                "Hosted Agent did not return the expected request_info call.",
+                "Hosted Agent did not return a chat response.",
                 file=sys.stderr,
             )
             print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
             return 1
-        if not response_text(payload):
+        if has_function_call(payload):
             print(
-                "Hosted Agent did not expose the HITL request as chat text.",
+                "Hosted Agent exposed a function call to the chat client.",
                 file=sys.stderr,
             )
             print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
             return 1
 
-        first_request_type = request_type(call)
-        if first_request_type == "clarification":
+        if "教えてください" in first_text:
             chat_reply = (
                 "出発地は東京、目的地は大阪、日程は2026年10月15日の"
                 "日帰り、目的は顧客会議です。"
             )
-            expected_next_type = "request_confirmation"
-        elif first_request_type == "request_confirmation":
+            expected_next_text = "以下の内容で旅程を検索します"
+        elif "以下の内容で旅程を検索します" in first_text:
             chat_reply = "OK"
-            expected_next_type = "plan_review"
+            expected_next_text = "この旅程プランでよろしいですか"
         else:
             print(
-                "Hosted Agent returned an unexpected first HITL request: "
-                f"{first_request_type}",
+                "Hosted Agent returned an unexpected first chat response.",
                 file=sys.stderr,
             )
+            print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
             return 1
 
         resumed_response = openai_client.responses.create(
@@ -120,19 +107,24 @@ def main() -> int:
         project_client.close()
 
     resumed_payload = resumed_response.model_dump(mode="json")
-    resumed_call = request_info_call(resumed_payload)
-    if not resumed_call or request_type(resumed_call) != expected_next_type:
+    resumed_text = response_text(resumed_payload)
+    if expected_next_text not in resumed_text:
         print(
-            "Hosted Agent did not resume to the expected "
-            f"{expected_next_type} call.",
+            "Hosted Agent did not resume to the expected chat response.",
+            file=sys.stderr,
+        )
+        print(json.dumps(resumed_payload, ensure_ascii=False), file=sys.stderr)
+        return 1
+    if has_function_call(resumed_payload):
+        print(
+            "Hosted Agent exposed a function call after chat resume.",
             file=sys.stderr,
         )
         print(json.dumps(resumed_payload, ensure_ascii=False), file=sys.stderr)
         return 1
 
     print(
-        "Hosted Agent displayed and resumed direct chat HITL from "
-        f"{first_request_type} to {expected_next_type}."
+        "Hosted Agent displayed and resumed HITL using chat text only."
     )
     return 0
 

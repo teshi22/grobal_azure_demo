@@ -6,7 +6,7 @@ Agent Frameworkシナリオは、**Microsoft Agent Frameworkで定義した1つ�
 
 初めて触る場合は「構成」「処理の流れ」「Azure へデプロイする」まで読んでください。環境変数、テスト、運用上の注意は必要なときに参照できます。
 
-## 4つのPrompt AgentをHosted Agentのワークフローから呼ぶ
+## 5つのPrompt AgentをHosted Agentのワークフローから呼ぶ
 
 ```mermaid
 flowchart LR
@@ -62,8 +62,8 @@ flowchart LR
 |---|---|---|
 | Frontend | Next.js 15、React 19 | 2シナリオの対話申請、申請一覧、比較評価 |
 | BFF | FastAPI | Entra ID認証、会話所有権、Responses APIとdurable SSEの通信中継、Datasetと評価runの管理 |
-| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 4つのPrompt AgentのオーケストレーションとHITL |
-| Prompt Agents | Foundry Agent Service | 専門処理4種と、確認、修正、最終承認、MCP実行を通常会話で管理する単一エージェントシナリオ |
+| Hosted Agent | Agent Framework、Responses protocol 2.0.0 | 5つのPrompt AgentのオーケストレーションとHITL |
+| Prompt Agents | Foundry Agent Service | 専門処理5種と、確認、修正、最終承認、MCP実行を通常会話で管理する単一エージェントシナリオ |
 | MCP | Azure Functions | 両シナリオの申請内容固定、利用者回答による承認判定、承認済み申請の冪等な登録 |
 | Data | Azure Cosmos DB | 会話、イベント、チェックポイント、承認grant、申請、評価ケースと結果 |
 | Observability | OpenTelemetry、Application Insights | BFF と Hosted Agent のトレース |
@@ -75,7 +75,7 @@ Hosted Agent 内の名前はチェックポイントとの互換性に関わる�
 |---|---|
 | Hosted Agent | `travel-request-agent` |
 | Workflow | `travel-request-workflow` |
-| Prompt Agents | `travel-request-clarifier`、`travel-request-planner`、`travel-request-policy-narrator`、`travel-request-approval-writer` |
+| Prompt Agents | `travel-request-clarifier`、`travel-request-planner`、`travel-request-plan-reviewer`、`travel-request-policy-narrator`、`travel-request-approval-writer` |
 | Single Prompt Agent | `travel-request-single-agent` |
 | Single Prompt Agent evaluation | `travel-request-single-evaluator` |
 
@@ -87,16 +87,16 @@ Prompt Agentは名前だけでなくversionも設定に保存します。プロ�
 
 | シナリオ | 実行内容 |
 |---|---|
-| Agent Framework workflow | Hosted Agent内のワークフローが処理順を制御し、4つの専門Prompt Agent、決定論的な規程判定、Agent Frameworkの`request_info`を組み合わせる |
+| Agent Framework workflow | Hosted Agent内のワークフローが処理順と会話状態を制御し、5つの専門Prompt Agentと決定論的な規程判定を組み合わせる |
 | Single Prompt Agent | 1つのPrompt Agentが通常会話だけで依頼整理、Web IQによる経路・運賃調査、規程判断、申請案作成、確認、修正、最終承認を管理し、承認後にMCPを直接実行する |
 
 両シナリオとも、情報不足の確認、整理した依頼内容の確認、旅程レビューと修正、申請書案の最終確認を画面内で行います。会話はシナリオごとに独立しているため、一方を操作しても他方の状態は変わりません。
 
-両シナリオとも、AgentがMCP `prepare_travel_request_submission`で申請内容を固定してから最終確認へ進みます。最終回答は加工せず`confirmation_text`として`submit_travel_request_with_approval`へ渡し、MCPが明示承認かキャンセルかを判定します。BFFは`request_info`の種類に依存せず、Hosted Agentが返した表示payloadと`call_id`を保存し、次の利用者メッセージをそのままfunction outputとして返します。
+両シナリオとも、AgentがMCP `prepare_travel_request_submission`で申請内容を固定してから最終確認へ進みます。最終回答は加工せず`confirmation_text`として`submit_travel_request_with_approval`へ渡し、MCPが明示承認かキャンセルかを判定します。BFFは利用者のメッセージを通常のResponses API入力として送り、Agentのテキスト応答をそのまま中継します。
 
 Single Prompt Agentには`submission`や`playground`などの独自モードはありません。Foundry Playgroundでは通常のチャット文字列だけで会話から申請まで実行できます。Webアプリからは所有者連携のために任意の`conversation_id`を入力へ添えますが、BFF発行トークンは使用しません。
 
-Hosted AgentもFoundry Playgroundから通常のチャットとして直接実行できます。HITLでは確認内容をテキスト表示しながら、BFF向けの`request_info` function callも同時に返します。Playgroundでは「OK」、修正内容、「キャンセル」を次のチャットメッセージとして入力すると、保存済みチェックポイントから処理を再開します。
+Hosted AgentもFoundry Playgroundから通常のチャットとして直接実行できます。確認、修正、承認はすべてテキスト応答と通常の利用者メッセージで進み、外部クライアントへfunction callを返しません。保存済みチェックポイントからの再開はHosted Agent内部で処理します。
 
 | 画面 | 用途 |
 |---|---|
@@ -111,7 +111,7 @@ Hosted AgentもFoundry Playgroundから通常のチャットとして直接実�
 
 | シナリオ | 構成 |
 |---|---|
-| Agent Framework workflow | Hosted Agentが処理順と状態を管理し、4つのPrompt Agentと決定論的な規程判定を組み合わせる |
+| Agent Framework workflow | Hosted Agentが処理順と状態を管理し、5つのPrompt Agentと決定論的な規程判定を組み合わせる |
 | Single Prompt Agent | 1つのPrompt Agentが依頼整理、Web IQによる経路・運賃調査、規程判断、申請案作成までを処理する |
 
 初期ケースは`evaluation-data/travel-request-cases.jsonl`に20件あります。標準的な国内出張、情報不足、規程の境界条件、複雑な経路、相対日付を含みます。画面から追加・編集・複製でき、JSONLも取り込めます。
@@ -235,7 +235,7 @@ bash deploy.sh
 4. MCP Functions、Hosted Agent、BFFを固定versionでデプロイする
 5. BFF、Foundryプロジェクト、Hosted AgentのManaged Identityへ必要な権限を設定する
 6. 初期20ケースを登録する
-7. BFFのhealth checkとHosted Agentの`request_info`を確認する
+7. BFFのhealth checkとHosted Agentの通常チャット応答を確認する
 
 比較評価のスモークテストは通常デプロイでは実行しません。必要な場合だけ、ローカルでは`RUN_EVALUATION_SMOKE=true`、GitHub Actionsでは同名のRepository Variableを`true`に設定して有効化します。
 
@@ -337,7 +337,7 @@ az bicep build --file infra/main.bicep
 azd show
 ```
 
-Hosted Agent のスモークテストは、デプロイ後の Responses API を直接呼び、確認要求がチャット本文と`request_info`の両方で返り、通常のチャット返信だけで再開できることを検証します。
+Hosted Agent のスモークテストは、デプロイ後の Responses API を直接呼び、確認要求にfunction callが含まれず、通常のチャット返信だけで再開できることを検証します。
 
 ```bash
 python scripts/smoke-hosted-agent.py \

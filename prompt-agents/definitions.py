@@ -53,6 +53,15 @@ EXTRACTED_REQUEST_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+PLAN_REVIEW_DECISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "approved": {"type": "boolean"},
+    },
+    "required": ["approved"],
+    "additionalProperties": False,
+}
+
 TRANSPORTATION_LEG_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -340,6 +349,15 @@ PROMPT_AGENT_SPECS = (
         response_schema_name="travel_plan",
         web_search=True,
         require_tool=True,
+    ),
+    PromptAgentSpec(
+        name="travel-request-plan-reviewer",
+        description=(
+            "Classifies itinerary review replies as approval or revision requests."
+        ),
+        prompt_file="travel-request-plan-reviewer.txt",
+        response_schema=PLAN_REVIEW_DECISION_SCHEMA,
+        response_schema_name="travel_plan_review_decision",
     ),
     PromptAgentSpec(
         name="travel-request-policy-narrator",

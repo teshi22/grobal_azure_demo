@@ -17,8 +17,9 @@ from travel_agent.workflow import build_workflow
 AGENT_VERSIONS = {
     "travel-request-clarifier": "11",
     "travel-request-planner": "12",
-    "travel-request-policy-narrator": "13",
-    "travel-request-approval-writer": "14",
+    "travel-request-plan-reviewer": "13",
+    "travel-request-policy-narrator": "14",
+    "travel-request-approval-writer": "15",
 }
 
 
@@ -36,12 +37,14 @@ def _agents(
     *,
     clarifier: _FakeAgent,
     planner: _FakeAgent | None = None,
+    plan_reviewer: _FakeAgent | None = None,
     policy: _FakeAgent | None = None,
     approval: _FakeAgent | None = None,
 ) -> TravelAgents:
     return TravelAgents(
         clarifier=clarifier,
         planner=planner or _FakeAgent(),
+        plan_reviewer=plan_reviewer or _FakeAgent(),
         policy=policy or _FakeAgent(),
         approval=approval or _FakeAgent(),
         versions=AGENT_VERSIONS,

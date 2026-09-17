@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     clarifier_agent_version: str = ""
     planner_agent_name: str = "travel-request-planner"
     planner_agent_version: str = ""
+    plan_reviewer_agent_name: str = "travel-request-plan-reviewer"
+    plan_reviewer_agent_version: str = ""
     policy_agent_name: str = "travel-request-policy-narrator"
     policy_agent_version: str = ""
     approval_agent_name: str = "travel-request-approval-writer"

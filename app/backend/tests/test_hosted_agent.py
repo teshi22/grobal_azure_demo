@@ -12,29 +12,6 @@ os.environ.setdefault(
 from app.services import hosted_agent
 from app.config import settings
 from app.services import foundry
-from app.services.hosted_agent import _extract_request_info
-
-
-def _response(request_data: dict) -> dict:
-    return {
-        "output": [
-            {
-                "type": "function_call",
-                "name": "request_info",
-                "call_id": "call-1",
-                "arguments": json.dumps(
-                    {
-                        "request_id": "request-1",
-                        "request_event": {
-                            "type": "request_info",
-                            "data": request_data,
-                        },
-                    },
-                    ensure_ascii=False,
-                ),
-            }
-        ]
-    }
 
 
 class _CaptureResponses:
@@ -121,7 +98,7 @@ def test_single_prompt_initial_turn_uses_modeless_input(monkeypatch):
     assert "extra_headers" not in responses.kwargs
 
 
-def test_hosted_resume_forwards_raw_user_input(monkeypatch):
+def test_hosted_resume_sends_plain_conversation_turn(monkeypatch):
     responses = _CaptureResponses()
     monkeypatch.setattr(
         foundry,
@@ -132,54 +109,39 @@ def test_hosted_resume_forwards_raw_user_input(monkeypatch):
     foundry.invoke_hosted_agent(
         conversation_id="conversation-1",
         user_id="user-1",
+        message="OK",
         previous_response_id="response-1",
-        function_call_id="call-1",
-        function_output="OK",
     )
 
-    assert responses.kwargs["input"] == [
-        {
-            "type": "function_call_output",
-            "call_id": "call-1",
-            "output": "OK",
-        }
-    ]
-
-
-def test_extracts_opaque_hitl_payload_without_business_transformation():
-    payload = {
-        "type": "request_confirmation",
-        "message": "この内容で調べますか？",
-        "data": {
-            "departure": "大阪",
-            "destination": "東京",
-        },
+    assert responses.kwargs["previous_response_id"] == "response-1"
+    assert json.loads(responses.kwargs["input"]) == {
+        "conversation_id": "conversation-1",
+        "message": "OK",
     }
-    result = _extract_request_info(
-        _response(payload)
+
+
+def test_extracts_nested_chat_output_text():
+    response = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "この旅程でよろしいですか？",
+                    }
+                ],
+            }
+        ]
+    }
+
+    assert (
+        hosted_agent._extract_output_text(response)
+        == "この旅程でよろしいですか？"
     )
-    assert result is not None
-    pending, event = result
-    assert pending == {
-        "call_id": "call-1",
-        "request_id": "request-1",
-    }
-    assert event == payload
 
 
-def test_extracts_new_hitl_types_without_bff_changes():
-    payload = {
-        "type": "manager_review",
-        "message": "上長確認が必要です。",
-        "data": {"department": "営業"},
-    }
-    result = _extract_request_info(_response(payload))
-    assert result is not None
-    _, event = result
-    assert event == payload
-
-
-def test_process_message_forwards_pending_user_input_without_interpreting_it(
+def test_process_message_forwards_plain_user_input_without_callbacks(
     monkeypatch,
 ):
     invocations = []
@@ -199,7 +161,8 @@ def test_process_message_forwards_pending_user_input_without_interpreting_it(
             }
 
         async def update(self, conversation_id, **changes):
-            assert changes["status"] == "completed"
+            assert changes["status"] == "ready"
+            assert changes["pending_request"] is None
 
     class Events:
         async def append(self, conversation_id, event_type, data, **kwargs):
@@ -238,16 +201,17 @@ def test_process_message_forwards_pending_user_input_without_interpreting_it(
         {
             "conversation_id": "conversation-1",
             "user_id": "user-1",
-            "message": None,
+            "message": "キャンセル",
             "previous_response_id": "response-1",
-            "function_call_id": "call-1",
-            "function_output": "キャンセル",
         }
     ]
     assert emitted == [
         (
-            "complete",
-            {"output": "出張申請の送信をキャンセルしました。"},
+            "agent_response",
+            {
+                "step": "agent_framework_workflow",
+                "content": "出張申請の送信をキャンセルしました。",
+            },
         )
     ]
 
@@ -263,6 +227,58 @@ def test_raises_for_failed_hosted_agent_response():
                 },
             }
         )
+
+
+def test_process_message_rejects_function_call_response(monkeypatch):
+    emitted = []
+
+    class Store:
+        async def get_owned(self, conversation_id, user_id):
+            return {
+                "scenario": "agent_framework_workflow",
+                "foundry_response_id": None,
+            }
+
+        async def update(self, conversation_id, **changes):
+            assert changes["status"] == "failed"
+
+    class Events:
+        async def append(self, conversation_id, event_type, data, **kwargs):
+            emitted.append((event_type, data))
+
+    class Response:
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-1",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "request_info",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
+    monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(
+        hosted_agent,
+        "invoke_hosted_agent",
+        lambda **kwargs: Response(),
+    )
+
+    asyncio.run(
+        hosted_agent.process_message(
+            conversation_id="conversation-1",
+            user_id="user-1",
+            content="大阪へ出張",
+            message_id="message-1",
+            idempotency_key="key-1",
+        )
+    )
+
+    assert emitted[0][0] == "error"
+    assert "unsupported callback" in emitted[0][1]["message"]
 
 
 def test_processes_claimed_durable_message(monkeypatch):
@@ -368,7 +384,8 @@ def test_process_message_ignores_legacy_single_prompt_mode_fields(
     ]
 
 
-def test_single_prompt_rejects_legacy_callback_conversation(monkeypatch):
+def test_single_prompt_clears_legacy_pending_request(monkeypatch):
+    invocations = []
     emitted = []
 
     class Store:
@@ -383,14 +400,33 @@ def test_single_prompt_rejects_legacy_callback_conversation(monkeypatch):
             }
 
         async def update(self, conversation_id, **changes):
-            assert changes["status"] == "failed"
+            assert changes["status"] == "ready"
+            assert changes["pending_request"] is None
 
     class Events:
         async def append(self, conversation_id, event_type, data, **kwargs):
             emitted.append((event_type, data))
 
+    class Response:
+        def model_dump(self, **kwargs):
+            return {
+                "id": "response-2",
+                "status": "completed",
+                "output_text": "続行しました。",
+                "output": [],
+            }
+
+    def fake_single_prompt(**kwargs):
+        invocations.append(kwargs)
+        return Response()
+
     monkeypatch.setattr(hosted_agent, "get_conversation_store", Store)
     monkeypatch.setattr(hosted_agent, "get_event_store", Events)
+    monkeypatch.setattr(
+        hosted_agent,
+        "invoke_single_prompt_agent",
+        fake_single_prompt,
+    )
 
     asyncio.run(
         hosted_agent.process_message(
@@ -402,8 +438,22 @@ def test_single_prompt_rejects_legacy_callback_conversation(monkeypatch):
         )
     )
 
-    assert emitted[0][0] == "error"
-    assert "Reset it" in emitted[0][1]["message"]
+    assert invocations == [
+        {
+            "conversation_id": "conversation-1",
+            "message": "はい",
+            "previous_response_id": "response-1",
+        }
+    ]
+    assert emitted == [
+        (
+            "agent_response",
+            {
+                "step": "single_prompt_agent",
+                "content": "続行しました。",
+            },
+        )
+    ]
 
 
 def test_process_message_defaults_legacy_document_to_submission(monkeypatch):
@@ -419,7 +469,7 @@ def test_process_message_defaults_legacy_document_to_submission(monkeypatch):
             }
 
         async def update(self, conversation_id, **changes):
-            assert changes["status"] == "completed"
+            assert changes["status"] == "ready"
 
     class Events:
         async def append(self, *args, **kwargs):

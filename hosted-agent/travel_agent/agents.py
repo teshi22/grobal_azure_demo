@@ -13,6 +13,8 @@ class PromptAgentSettings(Protocol):
     clarifier_agent_version: str
     planner_agent_name: str
     planner_agent_version: str
+    plan_reviewer_agent_name: str
+    plan_reviewer_agent_version: str
     policy_agent_name: str
     policy_agent_version: str
     approval_agent_name: str
@@ -23,6 +25,7 @@ class PromptAgentSettings(Protocol):
 class TravelAgents:
     clarifier: FoundryAgent
     planner: FoundryAgent
+    plan_reviewer: FoundryAgent
     policy: FoundryAgent
     approval: FoundryAgent
     versions: Mapping[str, str] = field(default_factory=dict)
@@ -53,6 +56,11 @@ def create_agents(
             config.planner_agent_version,
         ),
         (
+            "plan_reviewer",
+            config.plan_reviewer_agent_name,
+            config.plan_reviewer_agent_version,
+        ),
+        (
             "policy",
             config.policy_agent_name,
             config.policy_agent_version,
@@ -80,6 +88,7 @@ def create_agents(
     return TravelAgents(
         clarifier=agents["clarifier"],
         planner=agents["planner"],
+        plan_reviewer=agents["plan_reviewer"],
         policy=agents["policy"],
         approval=agents["approval"],
         versions=versions,

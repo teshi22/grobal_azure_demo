@@ -23,6 +23,7 @@ env:
   WEBIQ_API_KEY: ${{ secrets.WEBIQ_API_KEY }}
   CLARIFIER_AGENT_NAME: travel-request-clarifier
   PLANNER_AGENT_NAME: travel-request-planner
+  PLAN_REVIEWER_AGENT_NAME: travel-request-plan-reviewer
   POLICY_AGENT_NAME: travel-request-policy-narrator
   APPROVAL_AGENT_NAME: travel-request-approval-writer
   MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME || 'gpt-5.6-luna' }}
@@ -246,6 +247,7 @@ jobs:
             for agent_name_var in \
               CLARIFIER_AGENT_NAME \
               PLANNER_AGENT_NAME \
+              PLAN_REVIEWER_AGENT_NAME \
               POLICY_AGENT_NAME \
               APPROVAL_AGENT_NAME \
               SINGLE_PROMPT_AGENT_NAME \
@@ -331,6 +333,8 @@ jobs:
           azd env set CLARIFIER_AGENT_VERSION "$CLARIFIER_AGENT_VERSION"
           azd env set PLANNER_AGENT_NAME "$PLANNER_AGENT_NAME"
           azd env set PLANNER_AGENT_VERSION "$PLANNER_AGENT_VERSION"
+          azd env set PLAN_REVIEWER_AGENT_NAME "$PLAN_REVIEWER_AGENT_NAME"
+          azd env set PLAN_REVIEWER_AGENT_VERSION "$PLAN_REVIEWER_AGENT_VERSION"
           azd env set POLICY_AGENT_NAME "$POLICY_AGENT_NAME"
           azd env set POLICY_AGENT_VERSION "$POLICY_AGENT_VERSION"
           azd env set APPROVAL_AGENT_NAME "$APPROVAL_AGENT_NAME"

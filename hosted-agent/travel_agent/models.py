@@ -435,23 +435,14 @@ class PlanReviewRequest:
 @dataclass
 class PlanReviewResponse:
     approved: bool
-    feedback: str = ""
 
     @staticmethod
     def convert_from_payload(payload: str) -> "PlanReviewResponse":
-        try:
-            data = json.loads(payload)
-            return PlanReviewResponse(
-                approved=bool(data.get("approved", False)),
-                feedback=str(data.get("feedback", "")).strip(),
-            )
-        except json.JSONDecodeError:
-            text = payload.strip()
-            approved = _is_approval_text(text)
-            return PlanReviewResponse(
-                approved=approved,
-                feedback="" if approved else text,
-            )
+        data = json.loads(payload)
+        approved = data.get("approved")
+        if not isinstance(approved, bool):
+            raise ValueError("Invalid plan review decision")
+        return PlanReviewResponse(approved=approved)
 
 
 @dataclass

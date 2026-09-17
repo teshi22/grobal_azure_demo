@@ -275,8 +275,13 @@ class TravelPlannerStep(Executor):
 
 
 class PlanReviewStep(Executor):
-    def __init__(self, evaluation: EvaluationMode) -> None:
+    def __init__(
+        self,
+        agents: TravelAgents,
+        evaluation: EvaluationMode,
+    ) -> None:
         super().__init__(id="plan_review")
+        self._agent = agents.plan_reviewer
         self._evaluation = evaluation
 
     @handler(input=str, output=str)
@@ -304,7 +309,18 @@ class PlanReviewStep(Executor):
         response: str,
         ctx,
     ) -> None:
-        parsed = PlanReviewResponse.convert_from_payload(response)
+        decision_response = await self._agent.run(
+            json.dumps(
+                {
+                    "plan": json.loads(original.plan_json),
+                    "user_reply": response,
+                },
+                ensure_ascii=False,
+            )
+        )
+        parsed = PlanReviewResponse.convert_from_payload(
+            _response_text(decision_response, "plan reviewer")
+        )
         if parsed.approved:
             await ctx.send_message(original.plan_json, target_id="policy_check")
             return
@@ -312,7 +328,7 @@ class PlanReviewStep(Executor):
             (
                 "以下の旅程プランを変更してください。\n"
                 f"前回のプラン: {original.plan_json}\n"
-                f"変更要望: {parsed.feedback}"
+                f"変更要望: {response}"
             ),
             target_id="travel_planner",
         )

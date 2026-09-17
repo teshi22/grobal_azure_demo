@@ -1,4 +1,4 @@
-"""Workflow agent adapter that supports both BFF callbacks and direct chat."""
+"""Workflow agent adapter that exposes HITL as ordinary chat."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from agent_framework import (
 )
 
 
-class ChatCompatibleWorkflowAgent(WorkflowAgent):
-    """Expose HITL requests as text and accept a plain reply from chat clients."""
+class ChatOnlyWorkflowAgent(WorkflowAgent):
+    """Expose HITL requests and responses without external function calls."""
 
     def _convert_workflow_events_to_agent_response(
         self,
@@ -31,10 +31,9 @@ class ChatCompatibleWorkflowAgent(WorkflowAgent):
         for message in response.messages:
             event = message.raw_representation
             if isinstance(event, WorkflowEvent) and event.type == "request_info":
-                message.contents.insert(
-                    0,
-                    Content.from_text(text=self._request_prompt(event)),
-                )
+                message.contents = [
+                    Content.from_text(text=self._request_prompt(event))
+                ]
         return response
 
     def _convert_workflow_event_to_agent_response_updates(
@@ -48,10 +47,9 @@ class ChatCompatibleWorkflowAgent(WorkflowAgent):
         )
         if event.type == "request_info":
             for update in updates:
-                update.contents.insert(
-                    0,
-                    Content.from_text(text=self._request_prompt(event)),
-                )
+                update.contents = [
+                    Content.from_text(text=self._request_prompt(event))
+                ]
         return updates
 
     def _extract_function_responses(
@@ -71,26 +69,21 @@ class ChatCompatibleWorkflowAgent(WorkflowAgent):
                     "A plain chat reply requires exactly one pending HITL request"
                 )
             reply = " ".join(content.text or "" for content in contents).strip()
+            try:
+                envelope = json.loads(reply)
+            except json.JSONDecodeError:
+                envelope = None
+            if isinstance(envelope, dict) and isinstance(
+                envelope.get("message"),
+                str,
+            ):
+                reply = envelope["message"].strip()
             if not reply:
                 raise ValueError("The HITL reply must not be empty")
             return {next(iter(pending)): reply}
 
-        if contents and all(
-            content.type == "function_approval_response"
-            for content in contents
-        ):
-            responses: dict[str, str] = {}
-            for content in contents:
-                if not content.id:
-                    raise ValueError("The approval response has no request ID")
-                responses[content.id] = (
-                    "OK" if content.approved else "キャンセル"
-                )
-            return responses
-
-        return super()._extract_function_responses(
-            input_messages,
-            pending_requests,
+        raise ValueError(
+            "HITL responses must be sent as ordinary chat text"
         )
 
     @staticmethod

@@ -120,6 +120,31 @@ def test_single_agent_uses_web_iq_and_submission_mcp_tools():
     }
 
 
+def test_plan_reviewer_returns_a_strict_structured_decision():
+    definitions = _load_definitions()
+    agent_spec = next(
+        spec
+        for spec in definitions.PROMPT_AGENT_SPECS
+        if spec.name == "travel-request-plan-reviewer"
+    )
+
+    serialized = agent_spec.build_definition(
+        "gpt-test",
+        mcp_connection_id="travel-mcp-connection",
+        mcp_server_url="https://example.test/mcp",
+        web_iq_connection_id="web-iq-connection",
+        web_iq_server_url="https://example.test/web-iq/mcp",
+    ).as_dict()
+
+    assert "tools" not in serialized
+    assert serialized["text"]["format"] == {
+        "name": "travel_plan_review_decision",
+        "schema": definitions.PLAN_REVIEW_DECISION_SCHEMA,
+        "strict": True,
+        "type": "json_schema",
+    }
+
+
 def test_single_agent_prompt_enforces_conversation_and_tool_order():
     definitions = _load_definitions()
     agent_spec = next(
