@@ -1,4 +1,25 @@
-from travel_agent.models import TravelPlan, fare_evidence_errors
+import pytest
+
+from travel_agent.models import (
+    PlanReviewResponse,
+    RequestConfirmationResponse,
+    TravelPlan,
+    fare_evidence_errors,
+)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "お願いします",
+        "はい、お願いします。",
+        "この内容でお願いします",
+        "問題ありません",
+    ],
+)
+def test_natural_affirmative_reply_is_accepted(reply):
+    assert RequestConfirmationResponse.convert_from_payload(reply).confirmed
+    assert PlanReviewResponse.convert_from_payload(reply).approved
 
 
 def test_normalizes_verbose_day_trip_type():

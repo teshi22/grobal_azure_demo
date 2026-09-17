@@ -55,6 +55,7 @@ def build_workflow(agents: TravelAgents):
         .add_edge(clarifier, request_confirmation, condition=is_complete)
         .add_edge(clarification, clarifier)
         .add_edge(request_confirmation, planner)
+        .add_edge(request_confirmation, clarifier)
         .add_edge(planner, plan_review)
         .add_edge(plan_review, planner)
         .add_edge(plan_review, policy)

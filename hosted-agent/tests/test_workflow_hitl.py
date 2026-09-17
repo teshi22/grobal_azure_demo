@@ -258,6 +258,49 @@ def test_chat_compatible_agent_shows_hitl_and_accepts_plain_reply(
     asyncio.run(run())
 
 
+def test_chat_compatible_agent_surfaces_reconfirmation_after_revision():
+    async def run():
+        agents = TravelAgents(
+            clarifier=_FakeAgent(
+                json.dumps(
+                    {
+                        "departure": "大阪",
+                        "destination": "博多",
+                        "schedule": "2026-10-05",
+                        "purpose": "出張",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "departure": "",
+                        "destination": "",
+                        "schedule": "",
+                        "purpose": "チームミーティング",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            planner=_FakeAgent("{}"),
+            policy=_FakeAgent("規程に適合しています。"),
+            approval=_FakeAgent("出張申請書"),
+        )
+        agent = ChatCompatibleWorkflowAgent(
+            build_workflow(agents),
+            name="travel-request-workflow",
+        )
+
+        response = await agent.run("10/5に博多出張")
+        first_confirmation = _function_call(response)
+
+        response = await agent.run("目的はチームミーティング")
+        revised_confirmation = _function_call(response)
+        assert revised_confirmation.call_id != first_confirmation.call_id
+        assert "チームミーティング" in response.text
+
+    asyncio.run(run())
+
+
 def test_playground_keeps_hitl_and_stops_before_submission(monkeypatch):
     async def run():
         plan = {

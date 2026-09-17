@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -14,7 +15,28 @@ from .fare_sources import is_allowed_fare_source
 
 
 APPROVAL_WORDS = frozenset(
-    {"ok", "yes", "y", "はい", "確定", "進めて", "大丈夫", "承認"}
+    {
+        "ok",
+        "yes",
+        "y",
+        "はい",
+        "はいお願いします",
+        "確定",
+        "進めて",
+        "進めてください",
+        "大丈夫",
+        "大丈夫です",
+        "問題ありません",
+        "問題ないです",
+        "承認",
+        "お願いします",
+        "お願いいたします",
+        "お願い致します",
+        "これでお願いします",
+        "それでお願いします",
+        "この内容でお願いします",
+        "その内容でお願いします",
+    }
 )
 _EMPTY_NUMERIC_VALUES = frozenset({"", "なし", "不要", "null", "none", "-"})
 _TOTAL_KEYS = (
@@ -97,6 +119,12 @@ def _number_from_value(value: Any) -> float | Any:
         if components:
             return sum(components)
     return value
+
+
+def _is_approval_text(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", value).lower()
+    normalized = re.sub(r"[\s、。,.!！?？]+", "", normalized)
+    return normalized in APPROVAL_WORDS
 
 
 class ExtractedRequest(BaseModel):
@@ -379,9 +407,10 @@ class RequestConfirmationResponse:
             )
         except json.JSONDecodeError:
             text = payload.strip()
+            confirmed = _is_approval_text(text)
             return RequestConfirmationResponse(
-                confirmed=text.lower() in APPROVAL_WORDS,
-                revision="" if text.lower() in APPROVAL_WORDS else text,
+                confirmed=confirmed,
+                revision="" if confirmed else text,
             )
 
 
@@ -418,9 +447,10 @@ class PlanReviewResponse:
             )
         except json.JSONDecodeError:
             text = payload.strip()
+            approved = _is_approval_text(text)
             return PlanReviewResponse(
-                approved=text.lower() in APPROVAL_WORDS,
-                feedback="" if text.lower() in APPROVAL_WORDS else text,
+                approved=approved,
+                feedback="" if approved else text,
             )
 
 

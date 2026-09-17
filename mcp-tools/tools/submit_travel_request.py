@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -30,12 +32,27 @@ _EXPLICIT_APPROVALS = frozenset(
         "yes",
         "y",
         "はい",
+        "はいお願いします",
+        "確定",
+        "進めて",
         "承認",
         "承認します",
+        "大丈夫",
         "申請",
         "申請する",
         "申請します",
         "申請してください",
+        "お願いします",
+        "お願いいたします",
+        "お願い致します",
+        "これでお願いします",
+        "それでお願いします",
+        "この内容でお願いします",
+        "その内容でお願いします",
+        "進めてください",
+        "問題ありません",
+        "問題ないです",
+        "大丈夫です",
     }
 )
 _APPLICATION_STRING_FIELDS = (
@@ -281,7 +298,8 @@ def _validate_direct_arguments(arguments: dict) -> str | None:
 
 
 def _is_explicit_approval(confirmation_text: str) -> bool:
-    normalized = confirmation_text.strip().lower().rstrip("。.!！")
+    normalized = unicodedata.normalize("NFKC", confirmation_text).lower()
+    normalized = re.sub(r"[\s、。,.!！?？]+", "", normalized)
     return normalized in _EXPLICIT_APPROVALS
 
 

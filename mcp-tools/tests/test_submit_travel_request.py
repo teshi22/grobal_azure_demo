@@ -8,10 +8,25 @@ from tools import submit_travel_request as submission
 from tools.submit_travel_request import (
     APPLICATION_DATA_SCHEMA,
     _plan_hash,
+    _is_explicit_approval,
     _validate_arguments,
     _validate_direct_arguments,
     _validate_prepare_arguments,
 )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "お願いします",
+        "はい、お願いします。",
+        "この内容でお願いします",
+        "問題ありません",
+        "大丈夫",
+    ],
+)
+def test_mcp_accepts_natural_explicit_approval(reply):
+    assert _is_explicit_approval(reply)
 
 
 def _day_trip_plan() -> dict:
